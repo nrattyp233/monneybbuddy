@@ -1,9 +1,17 @@
 import { GoogleGenAI } from "@google/genai";
 
-// API key is automatically available as process.env.API_KEY
-const ai = new GoogleGenAI({ apiKey: process.env.API_KEY! });
+
+const apiKey = import.meta.env.VITE_GEMINI_API_KEY;
+let ai: GoogleGenAI | null = null;
+if (apiKey) {
+  ai = new GoogleGenAI({ apiKey });
+}
 
 export const generateSecurityTip = async (): Promise<string> => {
+  if (!ai) {
+    // No API key, fallback to default tip
+    return "Enable two-factor authentication (2FA) on your account for an extra layer of security.";
+  }
   try {
     const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
@@ -15,13 +23,11 @@ export const generateSecurityTip = async (): Promise<string> => {
             temperature: 0.9,
         }
     });
-    
     let tip = response.text.trim();
     // Remove potential leading/trailing quotes
     if ((tip.startsWith('"') && tip.endsWith('"')) || (tip.startsWith("'") && tip.endsWith("'"))) {
       tip = tip.substring(1, tip.length - 1);
     }
-    
     return tip;
   } catch (error) {
     console.error("Error generating security tip from Gemini:", error);
