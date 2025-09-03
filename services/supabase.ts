@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
 // Hardcode credentials to bypass platform environment variable issues.
 const SUPABASE_URL = "https://thdmywgjbhdtgtqnqizn.supabase.co";
