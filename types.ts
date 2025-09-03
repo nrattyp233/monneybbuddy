@@ -49,7 +49,8 @@ export interface LockedSaving {
   lockPeriodMonths: number;
   startDate: Date;
   endDate: Date;
-  isWithdrawn: boolean;
+  status: 'Pending' | 'Locked' | 'Withdrawn' | 'Failed';
+  paypal_order_id?: string;
 }
 
 export interface User {

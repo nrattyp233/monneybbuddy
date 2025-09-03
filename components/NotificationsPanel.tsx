@@ -16,7 +16,7 @@ const NotificationsPanel: React.FC<NotificationsPanelProps> = ({ transactions, l
     const incomingRequests = transactions.filter(tx => tx.type === 'request' && tx.status === TransactionStatus.PENDING && tx.to_details === currentUserEmail);
     const pendingTransactions = transactions.filter(tx => tx.status === TransactionStatus.PENDING && tx.type === 'send');
     const failedTransactions = transactions.filter(tx => tx.status === TransactionStatus.FAILED);
-    const maturedSavings = lockedSavings.filter(s => !s.isWithdrawn && new Date() > new Date(s.endDate));
+    const maturedSavings = lockedSavings.filter(s => s.status === 'Locked' && new Date() > new Date(s.endDate));
 
     const allNotifications = [
         ...maturedSavings,

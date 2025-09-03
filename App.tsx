@@ -90,7 +90,7 @@ const App: React.FC = () => {
                 lockPeriodMonths: s.lock_period_months,
                 startDate: new Date(s.start_date),
                 endDate: new Date(s.end_date),
-                isWithdrawn: s.is_withdrawn
+                paypal_order_id: s.paypal_order_id
             })) as LockedSaving[];
             setLockedSavings(formattedSavings);
 
@@ -256,94 +256,54 @@ const App: React.FC = () => {
     };
 
     const handleLock = async (accountId: string, amount: number, period: number) => {
-        if (!user) return;
-        const fromAccount = accounts.find(acc => acc.id === accountId);
-        if (!fromAccount || fromAccount.balance === null || fromAccount.balance < amount) {
-            alert("Insufficient funds.");
-            return;
-        }
-
+        if (!user) return Promise.reject(new Error("User not authenticated."));
         const supabase = getSupabase();
-        const startDate = new Date();
-        const endDate = new Date(startDate);
-        endDate.setMonth(endDate.getMonth() + period);
-
+    
         try {
-            // 1. Update account balance
-            const { error: updateError } = await supabase
-                .from('accounts')
-                .update({ balance: fromAccount.balance - amount })
-                .eq('id', accountId);
-            if (updateError) throw updateError;
-            
-            // 2. Insert into locked_savings
-            const { error: lockError } = await supabase.from('locked_savings').insert({
-                user_id: user.id,
-                account_id: accountId,
-                amount,
-                lock_period_months: period,
-                start_date: startDate.toISOString(),
-                end_date: endDate.toISOString(),
+            // Call the edge function to create a locked saving record and a PayPal order
+            const { data, error } = await supabase.functions.invoke('create-lock-payment', {
+                body: { accountId, amount, period },
             });
-            if (lockError) throw lockError;
-
-            // 3. Insert into transactions for history
-            const { error: txError } = await supabase.from('transactions').insert({
-                user_id: user.id,
-                from_details: fromAccount.name,
-                to_details: 'Locked Savings',
-                amount,
-                description: `Locked for ${period} months`,
-                type: 'lock',
-                status: 'Locked',
-            });
-            if (txError) throw txError;
-            
+    
+            if (error) throw error;
+            if (!data.approval_url) throw new Error("Function did not return a PayPal approval URL.");
+    
             await fetchData();
+            
+            // Open PayPal for user to approve the transfer
+            alert("You'll be redirected to PayPal to confirm the transfer to your locked savings vault. Your locked saving will show as 'Pending' until confirmed.");
+            window.open(data.approval_url, '_blank', 'noopener,noreferrer');
         } catch (error: any) {
-            console.error("Error locking funds:", error);
+            console.error("Error initiating lock:", error);
             alert(`Failed to lock funds. Reason: ${error.message || 'An unknown error occurred.'}`);
+            throw error;
         }
     };
-
+    
     const handleWithdraw = async (saving: LockedSaving) => {
         if (!user) return;
-        const supabase = getSupabase();
-        const targetAccount = accounts.find(acc => acc.id === saving.accountId) || accounts[0];
-        if (!targetAccount || targetAccount.balance === null) {
-            alert("No valid account to withdraw to.");
-            return;
-        }
-
+    
         const isEarly = new Date() < new Date(saving.endDate);
-        const penalty = isEarly ? saving.amount * EARLY_WITHDRAWAL_PENALTY_RATE : 0;
-        const receivable = saving.amount - penalty;
-
+        if (isEarly) {
+            const confirmed = confirm("This is an early withdrawal, and a 5% penalty will be applied. Are you sure you want to proceed?");
+            if (!confirmed) return;
+        }
+    
+        const supabase = getSupabase();
         try {
-            // 1. Mark saving as withdrawn
-            const { error: saveError } = await supabase.from('locked_savings').update({ is_withdrawn: true }).eq('id', saving.id);
-            if (saveError) throw saveError;
-            
-            // 2. Update account balance
-            const { error: accountError } = await supabase.from('accounts').update({ balance: targetAccount.balance + receivable }).eq('id', targetAccount.id);
-            if (accountError) throw accountError;
-
-            // 3. Add transactions for history
-            if (isEarly) {
-                await supabase.from('transactions').insert({
-                    user_id: user.id, from_details: 'Locked Savings', to_details: 'Penalty', amount: penalty,
-                    description: 'Early withdrawal penalty', type: 'penalty', status: 'Completed',
-                });
-            }
-            await supabase.from('transactions').insert({
-                user_id: user.id, from_details: 'Locked Savings', to_details: targetAccount.name, amount: receivable,
-                description: `Withdrawal from savings`, type: 'receive', status: 'Completed',
+            // Call the edge function to process the withdrawal via PayPal Payouts
+            const { error } = await supabase.functions.invoke('process-lock-withdrawal', {
+                body: { savingId: saving.id },
             });
-            
+    
+            if (error) throw error;
+    
+            alert("Withdrawal initiated. The funds are being sent back to your PayPal account. This may take a few moments to reflect.");
             await fetchData();
         } catch (error: any) {
             console.error("Error withdrawing funds:", error);
-            alert(`Failed to withdraw funds. Reason: ${error.message || 'An unknown error occurred.'}`);
+            const detail = error.context?.details ? JSON.parse(error.context.details).error : error.message;
+            alert(`Failed to withdraw funds. Reason: ${detail || 'An unknown error occurred.'}`);
         }
     };
     
@@ -389,7 +349,7 @@ const App: React.FC = () => {
 
         // Step 1: Check for ACTIVE locked savings. This is a business logic rule.
         const hasActiveSavings = lockedSavings.some(saving => 
-            saving.accountId === accountToRemove.id && !saving.isWithdrawn
+            saving.accountId === accountToRemove.id && saving.status !== 'Withdrawn'
         );
 
         if (hasActiveSavings) {
@@ -444,7 +404,7 @@ const App: React.FC = () => {
 
     // --- Derived State ---
     const notificationCount = transactions.filter(tx => (tx.type === 'request' && tx.to_details === user?.email && tx.status === TransactionStatus.PENDING)).length
-        + lockedSavings.filter(s => !s.isWithdrawn && new Date() > new Date(s.endDate)).length;
+        + lockedSavings.filter(s => s.status === 'Locked' && new Date() > new Date(s.endDate)).length;
 
     if (loading) {
         return <div className="min-h-screen flex items-center justify-center"><p>Loading...</p></div>;
