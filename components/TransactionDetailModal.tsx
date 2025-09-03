@@ -2,7 +2,7 @@ import React, { useEffect } from 'react';
 import Modal from './Modal';
 import { Transaction, TransactionStatus, GeoFence } from '../types';
 import { MapContainer, TileLayer, Circle, useMap } from 'react-leaflet';
-import { MapPinIcon, ClockIcon } from './icons';
+import { MapPinIcon, ClockIcon, DollarSignIcon } from './icons';
 
 interface TransactionDetailModalProps {
     transaction: Transaction | null;
@@ -25,7 +25,7 @@ function RecenterMap({ center, zoom }: { center: [number, number], zoom: number 
 const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({ transaction, isOpen, onClose }) => {
     if (!transaction) return null;
 
-    const { type, amount, from_details, to_details, date, status, geoFence, timeRestriction, description } = transaction;
+    const { type, amount, from_details, to_details, date, status, geoFence, timeRestriction, description, fee } = transaction;
     
     const getStatusInfo = () => {
         const statuses: Record<TransactionStatus, { text: string; color: string }> = {
@@ -39,7 +39,7 @@ const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({ transac
         return statuses[status] || { text: status, color: "text-white" };
     };
 
-    const isDebit = type === 'send' || type === 'penalty' || type === 'request';
+    const isDebit = type === 'send' || type === 'penalty' || type === 'request' || type === 'fee';
     const amountColor = isDebit ? 'text-red-400' : 'text-lime-400';
     const sign = type === 'receive' ? '+' : '-';
 
@@ -74,6 +74,17 @@ const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({ transac
                         <p className="font-mono text-xs">{transaction.id}</p>
                     </div>
                 </div>
+
+                {typeof fee === 'number' && fee > 0 && (
+                     <div className="space-y-2">
+                         <div className="flex items-center space-x-2 text-lime-300">
+                            <DollarSignIcon className="w-5 h-5"/>
+                            <h4 className="font-semibold">Transaction Fee</h4>
+                        </div>
+                        <p className="text-xs text-gray-400">A fee of {new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(fee)} was included in this transaction.</p>
+                    </div>
+                )}
+
 
                 {geoFence && (
                     <div className="space-y-2">

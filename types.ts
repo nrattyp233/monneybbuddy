@@ -29,7 +29,7 @@ export interface TimeRestriction {
 
 export interface Transaction {
   id: string;
-  type: 'send' | 'receive' | 'lock' | 'penalty' | 'request';
+  type: 'send' | 'receive' | 'lock' | 'penalty' | 'request' | 'fee';
   amount: number;
   from_details: string;
   to_details: string;
@@ -38,7 +38,8 @@ export interface Transaction {
   geoFence?: GeoFence;
   timeRestriction?: TimeRestriction;
   description: string;
-  payment_intent_id?: string;
+  paypal_order_id?: string;
+  fee?: number;
 }
 
 export interface LockedSaving {

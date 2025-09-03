@@ -19,6 +19,7 @@ import { getSupabase } from './services/supabase';
 import DeveloperSettings from './components/DeveloperSettings';
 
 type ActiveTab = 'send' | 'lock' | 'history' | 'request';
+const TRANSACTION_FEE_RATE = 0.03; // 3%
 
 const App: React.FC = () => {
     const [user, setUser] = useState<SupabaseUser | null>(null);
@@ -33,6 +34,8 @@ const App: React.FC = () => {
     const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
     const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
     const [accountToRemove, setAccountToRemove] = useState<Account | null>(null);
+    const [isClaiming, setIsClaiming] = useState<string | null>(null); // Track claiming state by transaction ID
+
 
     useEffect(() => {
         const supabase = getSupabase();
@@ -63,7 +66,7 @@ const App: React.FC = () => {
         try {
             const [accountsRes, transactionsRes, savingsRes] = await Promise.all([
                 supabase.from('accounts').select('*').eq('user_id', user.id),
-                supabase.from('transactions').select('*').or(`user_id.eq.${user.id},to_details.eq.${user.email}`).order('created_at', { ascending: false }),
+                supabase.from('transactions').select('*').or(`from_details.eq.${user.email},to_details.eq.${user.email}`).order('created_at', { ascending: false }),
                 supabase.from('locked_savings').select('*').eq('user_id', user.id)
             ]);
 
@@ -105,63 +108,128 @@ const App: React.FC = () => {
     // --- Action Handlers ---
 
     const handleSendMoney = async (fromAccountId: string, to: string, amount: number, description: string, geoFence: GeoFence | undefined, timeRestriction: TimeRestriction | undefined) => {
-        if (!user || !user.email) return;
+        if (!user || !user.email) return Promise.reject(new Error("User not authenticated"));
         const fromAccount = accounts.find(acc => acc.id === fromAccountId);
-        if (!fromAccount || fromAccount.balance === null || fromAccount.balance < amount) {
-            alert("Insufficient funds.");
+        if (!fromAccount) {
+             return Promise.reject(new Error("Invalid source account."));
+        }
+        
+        const fee = amount * TRANSACTION_FEE_RATE;
+        const totalDebit = amount + fee;
+        const hasRestrictions = !!geoFence || !!timeRestriction;
+        const supabase = getSupabase();
+    
+        try {
+            if (hasRestrictions) {
+                // --- INTERNAL CONDITIONAL TRANSFER ---
+                if (fromAccount.balance === null || fromAccount.balance < totalDebit) {
+                    throw new Error("Insufficient funds to cover the amount and transaction fee.");
+                }
+    
+                // 1. Debit the sender's account immediately for amount + fee
+                const { error: updateError } = await supabase
+                    .from('accounts')
+                    .update({ balance: fromAccount.balance - totalDebit })
+                    .eq('id', fromAccountId);
+                if (updateError) throw updateError;
+    
+                // 2. Create the 'Pending' transaction for the recipient to claim
+                const { error: insertError } = await supabase.from('transactions').insert({
+                    user_id: user.id,
+                    from_details: user.email,
+                    to_details: to,
+                    amount: amount,
+                    fee: fee,
+                    description: description,
+                    type: 'send',
+                    status: 'Pending',
+                    geo_fence: geoFence,
+                    time_restriction: timeRestriction,
+                });
+                if (insertError) throw insertError;
+    
+                await fetchData();
+                setActiveTab('history');
+                alert('Your conditional payment has been sent. The recipient must claim it by meeting the conditions.');
+    
+            } else {
+                // --- PAYPAL DIRECT TRANSFER (existing logic) ---
+                const { data: orderData, error: orderError } = await supabase.functions.invoke('create-paypal-order', {
+                    body: { 
+                        amount: amount.toFixed(2), 
+                        fee: fee.toFixed(2),
+                        recipient_email: to, 
+                        description 
+                    },
+                });
+    
+                if (orderError) throw orderError;
+                const { orderId, approval_url } = orderData;
+                if (!orderId || !approval_url) throw new Error("Server did not return a valid PayPal order.");
+    
+                const { error: insertError } = await supabase.from('transactions').insert({
+                    user_id: user.id,
+                    from_details: user.email,
+                    to_details: to,
+                    amount: amount,
+                    fee: fee,
+                    description: description,
+                    type: 'send',
+                    status: 'Pending',
+                    paypal_order_id: orderId,
+                });
+                if (insertError) throw insertError;
+    
+                await fetchData();
+                setActiveTab('history');
+                window.open(approval_url, '_blank', 'noopener,noreferrer');
+            }
+        } catch (error: any) {
+            console.error("Error sending money:", error);
+            alert(`Failed to send payment. Reason: ${error.message || 'An unknown error occurred.'}`);
+            throw error; // Re-throw for the UI component
+        }
+    };
+    
+    const handleClaimTransaction = async (tx: Transaction) => {
+        if (!navigator.geolocation) {
+            alert("Geolocation is not supported by your browser.");
             return;
         }
 
-        const supabase = getSupabase();
-        try {
-            // Step 1: Securely create a Payment Intent on the server.
-            const { data: intentData, error: intentError } = await supabase.functions.invoke('create-payment-intent', {
-                body: {
-                    amount: Math.round(amount * 100), // Stripe expects amount in cents
-                    sender_id: user.id,
-                    sender_email: user.email,
-                    recipient_email: to,
-                    description: description,
-                },
-            });
+        setIsClaiming(tx.id);
+        
+        navigator.geolocation.getCurrentPosition(
+            async (position) => {
+                const { latitude, longitude } = position.coords;
+                const supabase = getSupabase();
+                try {
+                    const { error } = await supabase.functions.invoke('claim-transaction', {
+                        body: { transactionId: tx.id, userCoordinates: { latitude, longitude } },
+                    });
 
-            if (intentError) throw intentError;
+                    if (error) {
+                        // The function will return a specific error message
+                        throw new Error(error.message || 'The backend function returned an error.');
+                    }
+                    
+                    alert('Transaction claimed successfully!');
+                    await fetchData();
 
-            const { paymentIntentId } = intentData;
-            if (!paymentIntentId) throw new Error("Server did not return a Payment Intent ID.");
-
-            // Step 2: Store a pending transaction in our database.
-            // The Stripe webhook will update its status to 'Completed' or 'Failed' later.
-            const { error: insertError } = await supabase.from('transactions').insert({
-                user_id: user.id,
-                from_details: user.email,
-                to_details: to,
-                amount: amount,
-                description: description,
-                type: 'send',
-                status: 'Pending',
-                geo_fence: geoFence,
-                time_restriction: timeRestriction,
-                payment_intent_id: paymentIntentId, // Link our transaction to Stripe's
-            });
-
-            if (insertError) throw insertError;
-
-            // Step 3: Refresh local data to show the new pending transaction.
-            await fetchData();
-            setActiveTab('history');
-
-            // NOTE: In a full checkout flow with card forms, you would use the `clientSecret` from the intent
-            // here with `stripe.confirmCardPayment(clientSecret)`. For a direct transfer model like this,
-            // the server-side confirmation (or a webhook from the initial charge) is often sufficient.
-            // The webhook is the most reliable method for final confirmation.
-
-        } catch (error: any) {
-            console.error("Error sending money:", error);
-            alert(`Failed to initiate payment. Reason: ${error.message || 'An unknown error occurred.'}`);
-            // Re-throw to be caught by the UI component
-            throw error;
-        }
+                } catch (err: any) {
+                     // Catching errors from the invoke call itself or thrown from the function
+                    const detail = err.context?.details ? JSON.parse(err.context.details).error : err.message;
+                    alert(`Claim failed: ${detail}`);
+                } finally {
+                    setIsClaiming(null);
+                }
+            },
+            (error) => {
+                alert(`Could not get your location: ${error.message}`);
+                setIsClaiming(null);
+            },
+            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        );
     };
 
     const handleRequestMoney = async (to: string, amount: number, description: string) => {
@@ -180,7 +248,8 @@ const App: React.FC = () => {
             if (error) throw error;
             await fetchData();
             setActiveTab('history');
-        } catch (error: any) {
+        } catch (error: any)
+{
             console.error("Error requesting money:", error);
             alert(`Failed to send request. Reason: ${error.message || 'An unknown error occurred.'}`);
         }
@@ -436,6 +505,8 @@ const App: React.FC = () => {
                             onTransactionClick={setSelectedTransaction}
                             onApproveRequest={handleApproveRequest}
                             onDeclineRequest={handleDeclineRequest}
+                            onClaimTransaction={handleClaimTransaction}
+                            isClaimingId={isClaiming}
                         />
                     )}
                 </div>

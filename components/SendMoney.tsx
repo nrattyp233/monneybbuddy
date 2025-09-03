@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Account, GeoFence, TimeRestriction } from '../types';
-import { MapPinIcon, ClockIcon, SearchIcon, RefreshCwIcon } from './icons';
+import { MapPinIcon, ClockIcon, SearchIcon, RefreshCwIcon, DollarSignIcon } from './icons';
 import { MapContainer, TileLayer, Circle, useMap, useMapEvents } from 'react-leaflet';
 
 interface SendMoneyProps {
@@ -19,6 +19,8 @@ function ChangeView({ center, zoom }: { center: [number, number], zoom: number }
     return null;
 }
 
+const TRANSACTION_FEE_RATE = 0.03; // 3%
+
 const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
     const [fromAccountId, setFromAccountId] = useState(accounts[0]?.id || '');
     const [recipient, setRecipient] = useState('');
@@ -29,6 +31,22 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
     const [hours, setHours] = useState('24');
     const [isProcessing, setIsProcessing] = useState(false);
     
+    // Fee calculation
+    const [fee, setFee] = useState(0);
+    const [totalDebit, setTotalDebit] = useState(0);
+
+    useEffect(() => {
+        const numericAmount = parseFloat(amount);
+        if (!isNaN(numericAmount) && numericAmount > 0) {
+            const calculatedFee = numericAmount * TRANSACTION_FEE_RATE;
+            setFee(calculatedFee);
+            setTotalDebit(numericAmount + calculatedFee);
+        } else {
+            setFee(0);
+            setTotalDebit(0);
+        }
+    }, [amount]);
+
     // State for map
     const [locationQuery, setLocationQuery] = useState('');
     const [mapCenter, setMapCenter] = useState<[number, number]>([40.7128, -74.0060]); // Default: NYC
@@ -86,8 +104,8 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
 
         const fromAccount = accounts.find(acc => acc.id === fromAccountId);
-        if (fromAccount && (fromAccount.balance === null || fromAccount.balance < parseFloat(amount))) {
-            alert("Insufficient funds.");
+        if (fromAccount && (fromAccount.balance === null || fromAccount.balance < totalDebit)) {
+            alert("Insufficient funds to cover the amount and transaction fee.");
             return;
         }
 
@@ -148,6 +166,17 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                  <div>
                     <label htmlFor="description" className="block text-sm font-medium text-gray-300 mb-1">Description</label>
                     <input type="text" id="description" name="description" value={description} onChange={e => setDescription(e.target.value)} placeholder="e.g., Dinner last night" autoComplete="off" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" />
+                </div>
+
+                <div className="p-4 bg-gray-900/50 rounded-lg space-y-2 border border-white/10">
+                    <div className="flex justify-between items-center text-sm">
+                        <span className="text-gray-400">Transaction Fee (3%):</span>
+                        <span className="font-medium text-white">${fee.toFixed(2)}</span>
+                    </div>
+                    <div className="flex justify-between items-center text-lg font-bold">
+                        <span className="text-lime-300">Total Debit:</span>
+                        <span className="text-lime-300">${totalDebit.toFixed(2)}</span>
+                    </div>
                 </div>
                 
                 <div className="space-y-4 pt-4 border-t border-white/10">
@@ -221,7 +250,10 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                             <span>Processing...</span>
                         </>
                     ) : (
-                         <span>Send Payment</span>
+                        <>
+                            <DollarSignIcon className="w-5 h-5" />
+                            <span>Pay ${totalDebit.toFixed(2)}</span>
+                        </>
                     )}
                 </button>
             </form>
