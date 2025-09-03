@@ -1,11 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Account, GeoFence, TimeRestriction } from '../types';
-import { MapPinIcon, ClockIcon, SearchIcon } from './icons';
+import { MapPinIcon, ClockIcon, SearchIcon, RefreshCwIcon } from './icons';
 import { MapContainer, TileLayer, Circle, useMap, useMapEvents } from 'react-leaflet';
 
 interface SendMoneyProps {
     accounts: Account[];
-    onSend: (fromAccountId: string, to: string, amount: number, description: string, geoFence: GeoFence | undefined, timeRestriction: TimeRestriction | undefined) => void;
+    onSend: (fromAccountId: string, to: string, amount: number, description: string, geoFence: GeoFence | undefined, timeRestriction: TimeRestriction | undefined) => Promise<void>;
 }
 
 // Helper component to change map view programmatically
@@ -27,6 +27,7 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
     const [useGeoFence, setUseGeoFence] = useState(false);
     const [useTimeRestriction, setUseTimeRestriction] = useState(false);
     const [hours, setHours] = useState('24');
+    const [isProcessing, setIsProcessing] = useState(false);
     
     // State for map
     const [locationQuery, setLocationQuery] = useState('');
@@ -77,7 +78,7 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
     };
     
-    const handleSubmit = (e: React.FormEvent) => {
+    const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!fromAccountId || !recipient || !amount || parseFloat(amount) <= 0 || !description) {
             alert('Please fill all required fields correctly.');
@@ -106,11 +107,18 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
             expiryDate.setHours(expiryDate.getHours() + parseInt(hours, 10));
             timeRestriction = { expiresAt: expiryDate };
         }
-
-        onSend(fromAccountId, recipient, parseFloat(amount), description, geoFence, timeRestriction);
-        setRecipient('');
-        setAmount('');
-        setDescription('');
+        
+        setIsProcessing(true);
+        try {
+            await onSend(fromAccountId, recipient, parseFloat(amount), description, geoFence, timeRestriction);
+            setRecipient('');
+            setAmount('');
+            setDescription('');
+        } catch (error) {
+            // Error is alerted in the parent component
+        } finally {
+            setIsProcessing(false);
+        }
     };
 
     return (
@@ -206,8 +214,15 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                     )}
                 </div>
 
-                <button type="submit" className="w-full bg-lime-500 hover:bg-lime-400 text-purple-900 font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 shadow-lg shadow-lime-500/20 flex items-center justify-center space-x-2">
-                    <span>Send Payment</span>
+                <button type="submit" disabled={isProcessing} className="w-full bg-lime-500 hover:bg-lime-400 text-purple-900 font-bold py-3 px-4 rounded-lg transition-all duration-300 transform hover:scale-105 shadow-lg shadow-lime-500/20 flex items-center justify-center space-x-2 disabled:opacity-70 disabled:cursor-wait">
+                    {isProcessing ? (
+                        <>
+                            <RefreshCwIcon className="w-5 h-5 animate-spin" />
+                            <span>Processing...</span>
+                        </>
+                    ) : (
+                         <span>Send Payment</span>
+                    )}
                 </button>
             </form>
         </div>

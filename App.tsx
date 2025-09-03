@@ -16,6 +16,7 @@ import RequestMoney from './components/RequestMoney';
 import TransactionDetailModal from './components/TransactionDetailModal';
 import Auth from './components/Auth';
 import { getSupabase } from './services/supabase';
+import DeveloperSettings from './components/DeveloperSettings';
 
 type ActiveTab = 'send' | 'lock' | 'history' | 'request';
 
@@ -27,6 +28,7 @@ const App: React.FC = () => {
     const [lockedSavings, setLockedSavings] = useState<LockedSaving[]>([]);
     const [activeTab, setActiveTab] = useState<ActiveTab>('send');
     const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
+    const [isDevSettingsModalOpen, setIsDevSettingsModalOpen] = useState(false);
     const [isConnectAccountModalOpen, setIsConnectAccountModalOpen] = useState(false);
     const [isNotificationsOpen, setIsNotificationsOpen] = useState(false);
     const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
@@ -109,17 +111,27 @@ const App: React.FC = () => {
             alert("Insufficient funds.");
             return;
         }
-        
+
         const supabase = getSupabase();
         try {
-            // 1. Update sender's account balance
-            const { error: updateError } = await supabase
-                .from('accounts')
-                .update({ balance: fromAccount.balance - amount })
-                .eq('id', fromAccountId);
-            if (updateError) throw updateError;
+            // Step 1: Securely create a Payment Intent on the server.
+            const { data: intentData, error: intentError } = await supabase.functions.invoke('create-payment-intent', {
+                body: {
+                    amount: Math.round(amount * 100), // Stripe expects amount in cents
+                    sender_id: user.id,
+                    sender_email: user.email,
+                    recipient_email: to,
+                    description: description,
+                },
+            });
 
-            // 2. Insert new transaction
+            if (intentError) throw intentError;
+
+            const { paymentIntentId } = intentData;
+            if (!paymentIntentId) throw new Error("Server did not return a Payment Intent ID.");
+
+            // Step 2: Store a pending transaction in our database.
+            // The Stripe webhook will update its status to 'Completed' or 'Failed' later.
             const { error: insertError } = await supabase.from('transactions').insert({
                 user_id: user.id,
                 from_details: user.email,
@@ -130,16 +142,25 @@ const App: React.FC = () => {
                 status: 'Pending',
                 geo_fence: geoFence,
                 time_restriction: timeRestriction,
+                payment_intent_id: paymentIntentId, // Link our transaction to Stripe's
             });
+
             if (insertError) throw insertError;
 
+            // Step 3: Refresh local data to show the new pending transaction.
             await fetchData();
             setActiveTab('history');
 
+            // NOTE: In a full checkout flow with card forms, you would use the `clientSecret` from the intent
+            // here with `stripe.confirmCardPayment(clientSecret)`. For a direct transfer model like this,
+            // the server-side confirmation (or a webhook from the initial charge) is often sufficient.
+            // The webhook is the most reliable method for final confirmation.
+
         } catch (error: any) {
             console.error("Error sending money:", error);
-            alert(`Failed to send money. Reason: ${error.message || 'An unknown error occurred.'}`);
-            // Optional: Rollback balance update if transaction insert fails
+            alert(`Failed to initiate payment. Reason: ${error.message || 'An unknown error occurred.'}`);
+            // Re-throw to be caught by the UI component
+            throw error;
         }
     };
 
@@ -423,7 +444,17 @@ const App: React.FC = () => {
             </main>
             
             <Modal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} title="Profile & Settings">
-                 <ProfileSettings user={{ name: user.user_metadata?.name || 'User', email: user.email! }} />
+                 <ProfileSettings 
+                    user={{ name: user.user_metadata?.name || 'User', email: user.email! }} 
+                    onOpenDevSettings={() => {
+                        setIsProfileModalOpen(false);
+                        setIsDevSettingsModalOpen(true);
+                    }}
+                 />
+            </Modal>
+
+            <Modal isOpen={isDevSettingsModalOpen} onClose={() => setIsDevSettingsModalOpen(false)} title="Developer Settings & API Guide">
+                <DeveloperSettings />
             </Modal>
 
             <ConnectAccountModal 

@@ -21,8 +21,11 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         console.error(`Error during ${context}:`, err);
         let detailedError = `Could not initialize Plaid connection. Please try again later.`;
         if (err.message) {
-            if (err.message.toLowerCase().includes('cors') || err.message.toLowerCase().includes('failed to fetch')) {
+            const lowerCaseMessage = err.message.toLowerCase();
+            if (lowerCaseMessage.includes('cors') || lowerCaseMessage.includes('failed to fetch')) {
                 detailedError = "Network Error: This is often due to a CORS policy on the server. Please ensure your Supabase Edge Function is configured with the correct CORS headers to accept requests from this app's domain.";
+            } else if (lowerCaseMessage.includes('edge function')) {
+                detailedError = "Server Error: The application's backend (a Supabase Edge Function) failed to process the request. This is often caused by missing API keys (like Plaid credentials) in the server's configuration. Please check the setup guide in your profile settings for more information.";
             } else {
                 detailedError = `An unexpected error occurred: ${err.message}`;
             }

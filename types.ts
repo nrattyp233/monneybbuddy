@@ -38,6 +38,7 @@ export interface Transaction {
   geoFence?: GeoFence;
   timeRestriction?: TimeRestriction;
   description: string;
+  payment_intent_id?: string;
 }
 
 export interface LockedSaving {
