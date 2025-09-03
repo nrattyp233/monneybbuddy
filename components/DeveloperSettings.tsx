@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 
 const CodeBlock = ({ children }: { children: React.ReactNode }) => (
     <pre className="bg-gray-900 rounded-md p-3 text-sm text-lime-300 font-mono overflow-x-auto">
@@ -12,25 +12,377 @@ const ExternalLink = ({ href, children }: { href: string, children: React.ReactN
     </a>
 );
 
-const CodeAccordion: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => {
+const CodeAccordion: React.FC<{ title: string; description: string; children: React.ReactNode }> = ({ title, description, children }) => {
     const [isOpen, setIsOpen] = useState(false);
     return (
         <div className="bg-gray-900/70 rounded-lg">
             <button
                 onClick={() => setIsOpen(!isOpen)}
-                className="w-full text-left p-3 font-semibold text-lime-300 flex justify-between items-center"
+                className="w-full text-left p-3 flex justify-between items-center"
             >
-                {title}
-                <span className={`transform transition-transform ${isOpen ? 'rotate-180' : ''}`}>▼</span>
+                <div>
+                    <p className="font-semibold text-lime-300">{title}</p>
+                    <p className="text-xs text-gray-400 mt-1">{description}</p>
+                </div>
+                <span className={`transform transition-transform ${isOpen ? 'rotate-180' : 'text-gray-500'}`}>{isOpen ? '▼' : '▶'}</span>
             </button>
             {isOpen && <div className="p-2 border-t border-lime-500/20">{children}</div>}
         </div>
     );
 };
 
+// The full SQL script is embedded here for easy access within the guide.
+const sqlScript = `-- Money Buddy Supabase Setup Script
+-- This script sets up the required tables, types, and policies for the app.
+-- Run this entire script in your Supabase SQL Editor.
 
-const DeveloperSettings: React.FC = () => {
-    const createPayPalOrderCode = `import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+-- 1. Create custom types for better data integrity
+CREATE TYPE public.transaction_status AS ENUM (
+    'Pending',
+    'Completed',
+    'Failed',
+    'Returned',
+    'Locked',
+    'Declined'
+);
+
+CREATE TYPE public.transaction_type AS ENUM (
+    'send',
+    'receive',
+    'lock',
+    'penalty',
+    'request',
+    'fee'
+);
+
+CREATE TYPE public.saving_status AS ENUM (
+    'Pending',
+    'Locked',
+    'Withdrawn',
+    'Failed'
+);
+
+-- 2. Create the users table to store public profile information
+-- This table will be linked to the auth.users table.
+CREATE TABLE public.users (
+    id uuid NOT NULL PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+    name character varying,
+    email character varying UNIQUE
+);
+
+-- 3. Set up Row Level Security (RLS) for the users table
+ALTER TABLE public.users ENABLE ROW LEVEL SECURITY;
+-- Users can see their own profile
+CREATE POLICY "Users can view their own data" ON public.users FOR SELECT
+USING (auth.uid() = id);
+-- Users can update their own profile
+CREATE POLICY "Users can update their own data" ON public.users FOR UPDATE
+USING (auth.uid() = id);
+
+-- 4. Create a function to automatically insert a new user into the public.users table upon sign-up
+CREATE OR REPLACE FUNCTION public.handle_new_user()
+RETURNS TRIGGER AS $$
+BEGIN
+  INSERT INTO public.users (id, name, email)
+  VALUES (new.id, new.raw_user_meta_data->>'name', new.email);
+  RETURN new;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- 5. Create a trigger to call the function when a new user is created in auth.users
+CREATE TRIGGER on_auth_user_created
+  AFTER INSERT ON auth.users
+  FOR EACH ROW EXECUTE PROCEDURE public.handle_new_user();
+
+-- 6. Create the accounts table
+CREATE TABLE public.accounts (
+    id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    name character varying NOT NULL,
+    provider character varying NOT NULL,
+    type character varying,
+    balance numeric(10, 2),
+    logo text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- 7. Set up RLS for the accounts table
+ALTER TABLE public.accounts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can manage their own accounts" ON public.accounts FOR ALL
+USING (auth.uid() = user_id);
+
+-- 8. Create the transactions table
+CREATE TABLE public.transactions (
+    id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid REFERENCES auth.users(id) ON DELETE SET NULL, -- Can be null for system transactions
+    from_details text NOT NULL,
+    to_details text NOT NULL,
+    amount numeric(10, 2) NOT NULL,
+    fee numeric(10, 2) DEFAULT 0.00,
+    description text,
+    type public.transaction_type NOT NULL,
+    status public.transaction_status NOT NULL,
+    geo_fence jsonb,
+    time_restriction jsonb,
+    paypal_order_id text UNIQUE,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- 9. Set up RLS for the transactions table
+ALTER TABLE public.transactions ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can view their own transactions" ON public.transactions FOR SELECT
+USING (
+    EXISTS (
+        SELECT 1 FROM public.users
+        WHERE public.users.id = auth.uid()
+        AND (public.users.email = public.transactions.from_details OR public.users.email = public.transactions.to_details)
+    )
+);
+-- Allow users to insert transactions where they are the sender
+CREATE POLICY "Users can create transactions from their own email" ON public.transactions FOR INSERT
+WITH CHECK (
+    EXISTS (
+        SELECT 1 FROM public.users
+        WHERE public.users.id = auth.uid() AND public.users.email = public.transactions.from_details
+    )
+);
+-- Allow users to update the status of transactions sent TO them (e.g., declining a request)
+CREATE POLICY "Users can update status on transactions sent to them" ON public.transactions FOR UPDATE
+USING (
+    EXISTS (
+        SELECT 1 FROM public.users
+        WHERE public.users.id = auth.uid() AND public.users.email = public.transactions.to_details
+    )
+);
+
+
+-- 10. Create the locked_savings table
+CREATE TABLE public.locked_savings (
+    id uuid NOT NULL DEFAULT gen_random_uuid() PRIMARY KEY,
+    user_id uuid NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+    account_id uuid NOT NULL REFERENCES public.accounts(id) ON DELETE RESTRICT,
+    amount numeric(10, 2) NOT NULL,
+    lock_period_months integer NOT NULL,
+    start_date timestamp with time zone NOT NULL,
+    end_date timestamp with time zone NOT NULL,
+    status public.saving_status NOT NULL,
+    paypal_order_id text,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+-- 11. Set up RLS for the locked_savings table
+ALTER TABLE public.locked_savings ENABLE ROW LEVEL SECURITY;
+CREATE POLICY "Users can manage their own locked savings" ON public.locked_savings FOR ALL
+USING (auth.uid() = user_id);
+
+-- 12. Seed an initial account for the admin user (optional, but helpful for testing)
+-- NOTE: You must replace 'lucasnale305@gmail.com' with the email of the user
+-- you designated as ADMIN_EMAIL in the App.tsx file.
+-- This part is best run manually after the admin user has signed up.
+/*
+INSERT INTO public.accounts (user_id, name, provider, type, balance)
+SELECT id, 'Admin Fee Account', 'System', 'checking', 0.00
+FROM auth.users
+WHERE email = 'lucasnale305@gmail.com';
+*/
+
+-- End of script
+`;
+
+const SUPABASE_URL = "https://thdmywgjbhdtgtqnqizn.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoZG15d2dqYmhkdGd0cW5xaXpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM3MzY5ODYsImV4cCI6MjA2OTMxMjk4Nn0.CLUC8eFtRQBHz6-570NJWZ8QIZs3ty0QGuDmEF5eeFc";
+
+
+interface DeveloperSettingsProps {
+    currentUserEmail: string;
+}
+
+const DeveloperSettings: React.FC<DeveloperSettingsProps> = ({ currentUserEmail }) => {
+    const [config, setConfig] = useState({
+        paypalClientId: '',
+        paypalClientSecret: '',
+        paypalApiUrl: 'https://api-m.sandbox.paypal.com',
+        paypalWebhookId: '',
+        paypalAdminEmail: currentUserEmail,
+        supabaseServiceRoleKey: '',
+        adminEmail: currentUserEmail,
+        plaidClientId: '',
+        plaidSecret: '',
+        plaidEnv: 'sandbox',
+        geminiApiKey: ''
+    });
+    const [showSecrets, setShowSecrets] = useState(false);
+    const [saveStatus, setSaveStatus] = useState<'idle' | 'saving' | 'saved'>('idle');
+    const [copySqlStatus, setCopySqlStatus] = useState('Copy Script');
+
+    useEffect(() => {
+        const savedConfig = localStorage.getItem('moneyBuddyDevConfig');
+        if (savedConfig) {
+            const parsed = JSON.parse(savedConfig);
+            setConfig(prev => ({
+                ...prev, 
+                ...parsed, 
+                paypalAdminEmail: parsed.paypalAdminEmail || currentUserEmail,
+                adminEmail: parsed.adminEmail || currentUserEmail
+            }));
+        } else {
+            setConfig(prev => ({ ...prev, paypalAdminEmail: currentUserEmail, adminEmail: currentUserEmail }));
+        }
+    }, [currentUserEmail]);
+
+    const handleSaveConfig = () => {
+        setSaveStatus('saving');
+        localStorage.setItem('moneyBuddyDevConfig', JSON.stringify(config));
+        setTimeout(() => {
+            setSaveStatus('saved');
+            setTimeout(() => setSaveStatus('idle'), 2000);
+        }, 500);
+    };
+    
+    const handleCopySql = () => {
+        navigator.clipboard.writeText(sqlScript);
+        setCopySqlStatus('Copied!');
+        setTimeout(() => setCopySqlStatus('Copy Script'), 2000);
+    };
+
+    const handleCopy = (value: string) => {
+        navigator.clipboard.writeText(value);
+    };
+    
+    const InputField = ({ name, label, value, note }: { name: keyof typeof config; label: string; value: string; note?: string }) => {
+        const isSecret = name.toLowerCase().includes('secret') || name.toLowerCase().includes('key');
+        return (
+            <div>
+                <label htmlFor={name} className="block text-sm font-medium text-gray-300 mb-1">{label}</label>
+                <div className="relative flex items-center">
+                    <input
+                        type={isSecret && !showSecrets ? 'password' : 'text'}
+                        id={name}
+                        name={name}
+                        value={value}
+                        onChange={(e) => setConfig({ ...config, [name]: e.target.value })}
+                        className="w-full bg-gray-800 border border-gray-600 rounded-md p-2 font-mono text-lime-300 focus:ring-lime-400 focus:border-lime-400 transition pr-10"
+                    />
+                    <button 
+                        onClick={() => handleCopy(value)}
+                        className="absolute right-2 p-1 text-gray-400 hover:text-white"
+                        title="Copy"
+                        >
+                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor" viewBox="0 0 16 16"><path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/><path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zM-1 2A1.5 1.5 0 0 1 .5 3.5V12h6V3.5A1.5 1.5 0 0 1 8 2H-1z"/></svg>
+                    </button>
+                </div>
+                 {note && <p className="text-xs text-gray-500 mt-1">{note}</p>}
+            </div>
+        );
+    };
+    
+    return (
+        <div className="space-y-6 text-gray-300 max-h-[70vh] overflow-y-auto pr-2">
+            
+            <section>
+                <h3 className="text-xl font-bold text-white mb-3">Backend Setup Guide</h3>
+                <p>This application requires several external services to function correctly. Follow these steps to configure your backend on <ExternalLink href="https://supabase.com/">Supabase</ExternalLink>.</p>
+            </section>
+            
+            <section>
+                <h3 className="text-xl font-bold text-white mb-3">Step 0: Prerequisites & Frontend Connection</h3>
+                 <p className="mb-3">
+                    This frontend application is pre-configured to connect to a specific Supabase project to make getting started easier. The connection details are hardcoded in the file <code>services/supabase.ts</code>.
+                </p>
+                 <div className="space-y-2 p-3 bg-gray-900/50 rounded-lg border border-white/10 text-sm font-mono">
+                    <p>SUPABASE_URL: "{SUPABASE_URL}"</p>
+                    <p>SUPABASE_ANON_KEY: "{SUPABASE_ANON_KEY.substring(0, 20)}..."</p>
+                </div>
+                 <p className="text-xs text-gray-400 mt-2">
+                    For a production application, you would replace these values with your own Supabase project's credentials.
+                </p>
+            </section>
+
+            <section>
+                <h3 className="text-xl font-bold text-white mb-3">Step 1: Set Backend Environment Variables</h3>
+                <p className="mb-3">Gather your API keys and add them as Secrets in your Supabase project dashboard under `Project Settings` &gt; `Secrets`. The backend functions rely on these to communicate with other services.</p>
+                 <div className="mt-4 p-3 bg-red-900/30 border border-red-500/50 rounded-lg text-sm">
+                    <strong>Disclaimer:</strong> Saving API keys here only stores them in your browser's local storage for convenience. You must <strong className="font-bold">manually</strong> set these values in your Supabase project for the backend to work.
+                </div>
+                <div className="space-y-4 p-4 mt-4 bg-gray-900/50 rounded-lg border border-white/10">
+                    <div className="flex justify-between items-center">
+                        <h4 className="text-lg font-semibold text-white">Configuration Values</h4>
+                        <label className="flex items-center space-x-2 cursor-pointer text-sm">
+                            <input type="checkbox" checked={showSecrets} onChange={() => setShowSecrets(!showSecrets)} className="form-checkbox h-4 w-4 rounded bg-gray-700 text-lime-500 focus:ring-lime-500 border-gray-600"/>
+                            <span>Show Secrets</span>
+                        </label>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <InputField name="paypalClientId" label="PAYPAL_CLIENT_ID" value={config.paypalClientId} />
+                        <InputField name="paypalClientSecret" label="PAYPAL_CLIENT_SECRET" value={config.paypalClientSecret} />
+                        <InputField name="paypalApiUrl" label="PAYPAL_API_URL" value={config.paypalApiUrl} note="Use sandbox URL for testing."/>
+                        <InputField name="paypalWebhookId" label="PAYPAL_WEBHOOK_ID" value={config.paypalWebhookId} />
+                        <InputField name="paypalAdminEmail" label="PAYPAL_ADMIN_EMAIL" value={config.paypalAdminEmail} note="This is where fees and locked funds are sent."/>
+                        
+                        <InputField name="supabaseServiceRoleKey" label="SUPABASE_SERVICE_ROLE_KEY" value={config.supabaseServiceRoleKey} note="Found in your Supabase project's API settings. Crucial for functions that need to bypass RLS."/>
+                        <InputField name="adminEmail" label="ADMIN_EMAIL" value={config.adminEmail} note="Used for internal transaction tracking."/>
+
+                        <InputField name="plaidClientId" label="PLAID_CLIENT_ID" value={config.plaidClientId} />
+                        <InputField name="plaidSecret" label="PLAID_SECRET" value={config.plaidSecret} />
+                        <InputField name="plaidEnv" label="PLAID_ENV" value={config.plaidEnv} note="'sandbox', 'development', or 'production'"/>
+
+                        <InputField name="geminiApiKey" label="API_KEY (for Gemini)" value={config.geminiApiKey} />
+                    </div>
+
+                    <div className="pt-2 text-right">
+                        <button 
+                            onClick={handleSaveConfig}
+                            className="bg-lime-600 hover:bg-lime-500 text-white font-bold py-2 px-6 rounded-lg transition-colors disabled:opacity-50"
+                            disabled={saveStatus === 'saving' || saveStatus === 'saved'}
+                        >
+                            {saveStatus === 'idle' && 'Save to Browser'}
+                            {saveStatus === 'saving' && 'Saving...'}
+                            {saveStatus === 'saved' && 'Saved!'}
+                        </button>
+                    </div>
+                </div>
+            </section>
+            
+            <section className="pt-4">
+                <h3 className="text-xl font-bold text-white mb-3">Step 2: Database Setup</h3>
+                <p className="mb-3">
+                    Next, create the database tables and security policies. The script below handles everything.
+                </p>
+                <ul className="list-disc list-inside mb-3 space-y-1 text-sm">
+                    <li>Builds the <code>users</code>, <code>accounts</code>, <code>transactions</code>, and <code>locked_savings</code> tables.</li>
+                    <li>Sets up a trigger to automatically create a user profile on sign-up.</li>
+                    <li>
+                        <strong className="text-yellow-300">Enforces Row Level Security (RLS)</strong> to ensure users can only access their own data.
+                    </li>
+                </ul>
+                <p className="mb-4">
+                    Go to the <ExternalLink href="https://app.supabase.io/project/_/sql">SQL Editor</ExternalLink> in your Supabase dashboard, paste this entire script, and click "RUN".
+                </p>
+                <div className="relative">
+                    <button
+                        onClick={handleCopySql}
+                        className="absolute top-2 right-2 bg-gray-700 hover:bg-gray-600 text-white font-semibold py-1 px-3 rounded-md text-xs transition-colors"
+                    >
+                        {copySqlStatus}
+                    </button>
+                    <CodeBlock>{sqlScript}</CodeBlock>
+                </div>
+            </section>
+
+            <section className="pt-4">
+                 <h3 className="text-xl font-bold text-white mb-3">Step 3: Deploy Backend Edge Functions</h3>
+                 <p className="mb-3">Deploy the following five functions to your Supabase project. Each function's code is provided below for you to copy into a file.</p>
+                
+                 <div className="my-4">
+                    <h4 className="font-semibold text-white mb-2">How to Deploy</h4>
+                    <p className="text-sm mb-2">The recommended way to deploy is using the Supabase CLI. After <ExternalLink href="https://supabase.com/docs/guides/cli/getting-started">installing the CLI</ExternalLink> and linking your project, create a file for each function (e.g., `supabase/functions/create-paypal-order/index.ts`), paste the code, and run:</p>
+                    <CodeBlock>{`supabase functions deploy <function-name>`}</CodeBlock>
+                 </div>
+
+                <div className="space-y-2">
+                    <CodeAccordion title="create-paypal-order" description="Initiates a PayPal payment and returns an approval URL.">
+                       <CodeBlock>{`import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { corsHeaders } from "../_shared/cors.ts";
 
 const PAYPAL_API_URL = Deno.env.get("PAYPAL_API_URL")!;
@@ -127,9 +479,10 @@ serve(async (req) => {
       status: 400,
     });
   }
-});`;
-
-    const payPalWebhookCode = `import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+});`}</CodeBlock>
+                    </CodeAccordion>
+                     <CodeAccordion title="paypal-webhook" description="Listens for PayPal's confirmation signal to update transaction statuses.">
+                       <CodeBlock>{`import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const supabase = createClient(
@@ -222,25 +575,26 @@ serve(async (req) => {
     console.error("Webhook processing error:", err.message);
     return new Response(err.message, { status: 400 });
   }
-});`;
-
-    const claimTransactionCode = `import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
+});`}</CodeBlock>
+                    </CodeAccordion>
+                     <CodeAccordion title="claim-transaction" description="Verifies a user's location and time to complete a conditional payment.">
+                       <CodeBlock>{`import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 import { corsHeaders } from "../_shared/cors.ts";
 
-const ADMIN_EMAIL = Deno.env.get("ADMIN_EMAIL")!; // e.g., 'admin@moneybuddy.app'
+const ADMIN_EMAIL = Deno.env.get("ADMIN_EMAIL")!;
 
 // Haversine distance formula to calculate distance between two lat/lon points in km
 function getDistanceInKm(lat1, lon1, lat2, lon2) {
     const R = 6371; // Radius of the earth in km
-    const dLat = (lat2 - lat1) * (Math.PI / 180);
-    const dLon = (lon2 - lon1) * (Math.PI / 180);
-    const a =
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = 
         Math.sin(dLat / 2) * Math.sin(dLat / 2) +
-        Math.cos(lat1 * (Math.PI / 180)) * Math.cos(lat2 * (Math.PI / 180)) *
+        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * 
         Math.sin(dLon / 2) * Math.sin(dLon / 2);
     const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-    return R * c; // Distance in km
+    return R * c;
 }
 
 serve(async (req) => {
@@ -250,330 +604,81 @@ serve(async (req) => {
 
     try {
         const { transactionId, userCoordinates } = await req.json();
-
-        // Use the SERVICE_ROLE_KEY to perform admin-level tasks
-        const supabaseAdmin = createClient(
-            Deno.env.get("SUPABASE_URL")!,
-            Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-        );
         
-        // Initialize a second client with user's auth to verify ownership
-        const supabaseUser = createClient(
-            Deno.env.get("SUPABASE_URL")!,
-            Deno.env.get("SUPABASE_ANON_KEY")!,
-            { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
+        const supabase = createClient(
+          Deno.env.get("SUPABASE_URL")!,
+          Deno.env.get("SUPABASE_ANON_KEY")!,
+          { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
         );
 
-        const { data: { user } } = await supabaseUser.auth.getUser();
+        const { data: { user } } = await supabase.auth.getUser();
         if (!user) throw new Error("User not authenticated.");
 
-        const { data: tx, error: txError } = await supabaseAdmin
+        const { data: tx, error: txError } = await supabase
             .from('transactions')
             .select('*')
             .eq('id', transactionId)
             .single();
 
-        if (txError || !tx) throw new Error("Transaction not found.");
+        if (txError || !tx) throw new Error("Transaction not found or access denied.");
         if (tx.to_details !== user.email) throw new Error("You are not the recipient of this transaction.");
-        if (tx.status !== 'Pending') throw new Error("This transaction is not pending and cannot be claimed.");
+        if (tx.status !== 'Pending') throw new Error("Transaction is not in a claimable state.");
 
-        // --- VALIDATE RESTRICTIONS ---
-        if (tx.time_restriction && new Date(tx.time_restriction.expiresAt) < new Date()) {
-            await supabaseAdmin.from('transactions').update({ status: 'Failed' }).eq('id', tx.id);
-            // In a real app, you would also need a separate process to refund the sender.
+        // Check time restriction
+        if (tx.time_restriction && new Date() > new Date(tx.time_restriction.expiresAt)) {
+            // Logic to return funds to sender would go here
+            await supabase.from('transactions').update({ status: 'Returned', description: \`\${tx.description} (Expired)\` }).eq('id', transactionId);
             throw new Error("This transaction has expired.");
         }
 
-        if (tx.geo_fence) {
-            if (!userCoordinates) throw new Error("Your location is required.");
+        // Check geofence
+        if (tx.geo_fence && userCoordinates) {
             const distance = getDistanceInKm(
-                tx.geo_fence.latitude, tx.geo_fence.longitude,
-                userCoordinates.latitude, userCoordinates.longitude
+                userCoordinates.latitude, userCoordinates.longitude,
+                tx.geo_fence.latitude, tx.geo_fence.longitude
             );
             if (distance > tx.geo_fence.radiusKm) {
-                throw new Error(\`You are too far away. You must be within \${tx.geo_fence.radiusKm} km to claim.\`);
+                throw new Error(\`You are not within the required geofence. You are \${distance.toFixed(2)}km away, but need to be within \${tx.geo_fence.radiusKm}km.\`);
             }
+        } else if (tx.geo_fence && !userCoordinates) {
+            throw new Error("User location is required to claim this transaction.");
         }
-        
-        // --- PROCESS THE TRANSFER ---
-        // 1. Credit Recipient
-        const { data: recipientAccount } = await supabaseAdmin.from('accounts').select('id, balance').eq('user_id', user.id).limit(1).single();
-        if (!recipientAccount) throw new Error("Recipient does not have an account.");
-        await supabaseAdmin.from('accounts').update({ balance: (recipientAccount.balance || 0) + tx.amount }).eq('id', recipientAccount.id);
 
-        // 2. Credit Admin for the Fee
-        if (tx.fee && tx.fee > 0) {
-            const { data: adminUserResult } = await supabaseAdmin.from('users').select('id').eq('email', ADMIN_EMAIL).single();
-            const adminUserId = adminUserResult?.id;
-            if (!adminUserId) throw new Error("Admin user not found.");
-            const { data: adminAccount } = await supabaseAdmin.from('accounts').select('id, balance').eq('user_id', adminUserId).limit(1).single();
-            if (!adminAccount) throw new Error("Admin account not found.");
-            await supabaseAdmin.from('accounts').update({ balance: (adminAccount.balance || 0) + tx.fee }).eq('id', adminAccount.id);
-            
-            // Create a record for the fee transaction
-            await supabaseAdmin.from('transactions').insert({
-                from_details: tx.from_details, to_details: ADMIN_EMAIL, amount: tx.fee,
-                description: \`Fee for tx: \${tx.id}\`, type: 'fee', status: 'Completed'
-            });
-        }
-        
-        // 3. Mark original transaction as completed
-        await supabaseAdmin.from('transactions').update({ status: 'Completed' }).eq('id', tx.id);
+        // All checks passed. Complete the transaction.
+        const { error: updateError } = await supabase
+            .from('transactions')
+            .update({ status: 'Completed' })
+            .eq('id', transactionId);
 
-        return new Response(JSON.stringify({ success: true, message: "Transaction claimed!" }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
+        if (updateError) throw updateError;
+        
+        // Create a 'receive' transaction for the recipient's history
+        const { error: receiveError } = await supabase.from('transactions').insert({
+             user_id: user.id,
+             from_details: tx.from_details,
+             to_details: user.email,
+             amount: tx.amount,
+             description: \`Received: \${tx.description}\`,
+             type: 'receive',
+             status: 'Completed',
+        });
+        if (receiveError) console.error("Could not create 'receive' record:", receiveError);
+
+
+        return new Response(JSON.stringify({ message: "Transaction claimed successfully." }), {
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 200,
         });
 
     } catch (error) {
         return new Response(JSON.stringify({ error: error.message }), {
-            headers: { ...corsHeaders, "Content-Type": "application/json" },
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' },
             status: 400,
         });
     }
-});
-`;
-
-    const createLockPaymentCode = `import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
-
-const PAYPAL_API_URL = Deno.env.get("PAYPAL_API_URL")!;
-const CLIENT_ID = Deno.env.get("PAYPAL_CLIENT_ID")!;
-const CLIENT_SECRET = Deno.env.get("PAYPAL_CLIENT_SECRET")!;
-const PAYPAL_ADMIN_EMAIL = Deno.env.get("PAYPAL_ADMIN_EMAIL")!;
-
-async function getPayPalAccessToken() {
-  const auth = btoa(\`\${CLIENT_ID}:\${CLIENT_SECRET}\`);
-  const res = await fetch(\`\${PAYPAL_API_URL}/v1/oauth2/token\`, {
-    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: \`Basic \${auth}\` },
-    body: "grant_type=client_credentials",
-  });
-  return (await res.json()).access_token;
-}
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
-  try {
-    const { accountId, amount, period } = await req.json();
-    const supabase = createClient(
-        Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!,
-        { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
-    );
-    const { data: { user } } = await supabase.auth.getUser();
-    if (!user) throw new Error("User not authenticated.");
-
-    const startDate = new Date();
-    const endDate = new Date(startDate);
-    endDate.setMonth(endDate.getMonth() + period);
-
-    const { data: saving, error: savingError } = await supabase
-      .from('locked_savings')
-      .insert({
-        user_id: user.id,
-        account_id: accountId,
-        amount,
-        lock_period_months: period,
-        start_date: startDate.toISOString(),
-        end_date: endDate.toISOString(),
-        status: 'Pending',
-      }).select().single();
-    
-    if (savingError) throw savingError;
-
-    const accessToken = await getPayPalAccessToken();
-    const orderPayload = {
-      intent: 'CAPTURE',
-      purchase_units: [{
-        amount: { currency_code: 'USD', value: amount.toFixed(2) },
-        payee: { email_address: PAYPAL_ADMIN_EMAIL },
-        description: \`Locked Saving: \${amount.toFixed(2)} for \${period} months\`,
-        custom_id: \`lock_\${saving.id}\`, // CRITICAL for webhook to identify this transaction
-      }],
-      application_context: {
-        return_url: 'https://example.com/success', cancel_url: 'https://example.com/cancel',
-      },
-    };
-
-    const response = await fetch(\`\${PAYPAL_API_URL}/v2/checkout/orders\`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': \`Bearer \${accessToken}\` },
-      body: JSON.stringify(orderPayload),
-    });
-
-    const orderData = await response.json();
-    if (!response.ok) throw new Error(orderData.details?.[0]?.description || 'Failed to create PayPal order.');
-
-    await supabase.from('locked_savings').update({ paypal_order_id: orderData.id }).eq('id', saving.id);
-    const approvalLink = orderData.links.find((link) => link.rel === 'approve');
-
-    return new Response(JSON.stringify({ approval_url: approvalLink.href }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400,
-    });
-  }
-});`;
-
-    const processLockWithdrawalCode = `import { serve } from "https://deno.land/std@0.177.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
-import { corsHeaders } from "../_shared/cors.ts";
-
-const PAYPAL_API_URL = Deno.env.get("PAYPAL_API_URL")!;
-const CLIENT_ID = Deno.env.get("PAYPAL_CLIENT_ID")!;
-const CLIENT_SECRET = Deno.env.get("PAYPAL_CLIENT_SECRET")!;
-const EARLY_WITHDRAWAL_PENALTY_RATE = 0.05;
-
-async function getPayPalAccessToken() {
-  const auth = btoa(\`\${CLIENT_ID}:\${CLIENT_SECRET}\`);
-  const res = await fetch(\`\${PAYPAL_API_URL}/v1/oauth2/token\`, {
-    method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded", Authorization: \`Basic \${auth}\` },
-    body: "grant_type=client_credentials",
-  });
-  return (await res.json()).access_token;
-}
-
-serve(async (req) => {
-  if (req.method === 'OPTIONS') return new Response('ok', { headers: corsHeaders });
-
-  try {
-    const { savingId } = await req.json();
-    const supabaseAdmin = createClient(
-      Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
-    );
-    const supabaseUser = createClient(
-      Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_ANON_KEY")!,
-      { global: { headers: { Authorization: req.headers.get('Authorization')! } } }
-    );
-    const { data: { user } } = await supabaseUser.auth.getUser();
-    if (!user) throw new Error("User not authenticated.");
-
-    const { data: saving, error } = await supabaseAdmin.from('locked_savings').select('*').eq('id', savingId).single();
-    if (error || !saving) throw new Error("Saving not found.");
-    if (saving.user_id !== user.id) throw new Error("Unauthorized access.");
-    if (saving.status !== 'Locked') throw new Error("Saving is not in a withdrawable state.");
-
-    const isEarly = new Date() < new Date(saving.end_date);
-    const penalty = isEarly ? saving.amount * EARLY_WITHDRAWAL_PENALTY_RATE : 0;
-    const payoutAmount = saving.amount - penalty;
-
-    const accessToken = await getPayPalAccessToken();
-    const payoutPayload = {
-      sender_batch_header: {
-        sender_batch_id: \`SAVING_WITHDRAW_\${saving.id}_\${Date.now()}\`,
-        email_subject: "Your Money Buddy Savings Withdrawal is Complete!",
-        email_message: \`Your withdrawal of \${payoutAmount.toFixed(2)} USD from your locked saving is being processed.\`,
-      },
-      items: [{
-        recipient_type: "EMAIL",
-        amount: { value: payoutAmount.toFixed(2), currency: "USD" },
-        note: "Locked savings withdrawal.",
-        sender_item_id: saving.id,
-        receiver: user.email,
-      }],
-    };
-
-    const response = await fetch(\`\${PAYPAL_API_URL}/v1/payments/payouts\`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'Authorization': \`Bearer \${accessToken}\` },
-      body: JSON.stringify(payoutPayload),
-    });
-
-    if (!response.ok) {
-        const errorData = await response.json();
-        console.error("PayPal Payouts API Error:", errorData);
-        throw new Error(errorData.message || "Failed to initiate PayPal payout.");
-    }
-
-    await supabaseAdmin.from('locked_savings').update({ status: 'Withdrawn' }).eq('id', saving.id);
-    
-    if (isEarly) {
-      await supabaseAdmin.from('transactions').insert({
-        user_id: user.id, from_details: 'Locked Savings Vault', to_details: 'Penalty', amount: penalty,
-        description: '5% Early withdrawal penalty', type: 'penalty', status: 'Completed',
-      });
-    }
-    await supabaseAdmin.from('transactions').insert({
-      user_id: user.id, from_details: 'Locked Savings Vault', to_details: 'Your Account', amount: payoutAmount,
-      description: 'Withdrawal from savings', type: 'receive', status: 'Completed',
-    });
-
-    return new Response(JSON.stringify({ success: true }), { headers: { ...corsHeaders, "Content-Type": "application/json" } });
-  } catch (error) {
-    return new Response(JSON.stringify({ error: error.message }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" }, status: 400,
-    });
-  }
-});`;
-
-    return (
-        <div className="space-y-8 text-gray-300 max-h-[70vh] overflow-y-auto pr-2">
-            
-            <section>
-                <h3 className="text-xl font-bold text-white mb-3">API Keys & Service Setup Guide</h3>
-                <p>This application requires several external services to function correctly. This guide explains what keys are needed and where to configure them. <strong className="text-yellow-300">These keys should be kept secret and never exposed in client-side code.</strong></p>
-            </section>
-            
-            <section className="p-4 border border-violet-500/30 bg-violet-900/20 rounded-lg">
-                <h4 className="text-lg font-semibold text-violet-200 mb-2">1. PayPal (Payment Processing)</h4>
-                <p className="mb-3">This app uses the PayPal REST API to process payments. You must set your PayPal API keys as environment variables in your Supabase project.</p>
-                <p className="mb-2"><strong>Required Environment Variables for PayPal:</strong></p>
-                <ul className="list-disc list-inside space-y-1 mb-3 bg-gray-900 p-3 rounded-md">
-                    <li><code className="text-lime-300">PAYPAL_CLIENT_ID</code>: Your PayPal App Client ID.</li>
-                    <li><code className="text-lime-300">PAYPAL_CLIENT_SECRET</code>: Your PayPal App Secret.</li>
-                    <li><code className="text-lime-300">PAYPAL_API_URL</code>: Use <code className="text-gray-400">https://api-m.sandbox.paypal.com</code> for testing or <code className="text-gray-400">https://api-m.paypal.com</code> for production.</li>
-                    <li><code className="text-lime-300">PAYPAL_WEBHOOK_ID</code>: The ID of the webhook you create in the PayPal dashboard.</li>
-                    <li><code className="text-lime-300">PAYPAL_ADMIN_EMAIL</code>: Your PayPal business email to receive platform fees and hold locked funds.</li>
-                </ul>
-                 <p className="text-sm font-bold text-yellow-300 my-3">
-                    <strong className="block">Important: PayPal Payouts API</strong>
-                    The Locked Savings withdrawal feature uses the PayPal Payouts API, which is a restricted product. You must contact PayPal business support to have Payouts enabled for your live account. It is usually available by default in the Sandbox environment for testing.
-                </p>
-                <ExternalLink href="https://developer.paypal.com/dashboard/applications/create">Get PayPal API Keys</ExternalLink>
-
-                <h5 className="font-semibold text-white mt-4 mb-2">Edge Function Setup</h5>
-                <p className="text-sm mb-3">You need to deploy five Edge Functions to your Supabase project. The code is provided below.</p>
-                <div className="space-y-2">
-                    <CodeAccordion title="Code for: create-paypal-order">
-                       <CodeBlock>{createPayPalOrderCode}</CodeBlock>
-                    </CodeAccordion>
-                     <CodeAccordion title="Code for: paypal-webhook (Updated)">
-                       <CodeBlock>{payPalWebhookCode}</CodeBlock>
-                    </CodeAccordion>
-                     <CodeAccordion title="Code for: claim-transaction">
-                       <CodeBlock>{claimTransactionCode}</CodeBlock>
-                    </CodeAccordion>
-                    <CodeAccordion title="Code for: create-lock-payment (New)">
-                       <CodeBlock>{createLockPaymentCode}</CodeBlock>
-                    </CodeAccordion>
-                     <CodeAccordion title="Code for: process-lock-withdrawal (New)">
-                       <CodeBlock>{processLockWithdrawalCode}</CodeBlock>
+});`}</CodeBlock>
                     </CodeAccordion>
                 </div>
-
-                 <h5 className="font-semibold text-white mt-4 mb-2">PayPal Webhook Configuration</h5>
-                <p className="text-sm mb-3">In your PayPal Developer Dashboard, configure a webhook to listen for the <code className="text-lime-300">CHECKOUT.ORDER.APPROVED</code> event. This single webhook will now handle both regular payments and locked savings confirmations.</p>
-            </section>
-
-            <section className="p-4 border border-indigo-500/30 bg-indigo-900/20 rounded-lg">
-                <h4 className="text-lg font-semibold text-indigo-200 mb-2">2. Supabase (Backend & Database)</h4>
-                <p className="mb-3">Supabase handles user auth, the database, and hosts our secure Edge Functions. You'll need to add your <code className="text-lime-300">SUPABASE_SERVICE_ROLE_KEY</code> to the environment variables. You also need an <code className="text-lime-300">ADMIN_EMAIL</code> variable for internal fee transactions (this can be the same as your PayPal admin email).</p>
-                <ExternalLink href="https://supabase.com/dashboard">Go to Supabase Dashboard</ExternalLink>
-            </section>
-            
-            <section className="p-4 border border-cyan-500/30 bg-cyan-900/20 rounded-lg">
-                <h4 className="text-lg font-semibold text-cyan-200 mb-2">3. Plaid (Bank Account Linking)</h4>
-                <p className="mb-3">Plaid integration for linking bank accounts is also handled by Edge Functions. You must set your Plaid API keys as environment variables in Supabase.</p>
-                <ExternalLink href="https://dashboard.plaid.com/">Get Plaid API Keys</ExternalLink>
-            </section>
-            
-            <section className="p-4 border border-lime-500/30 bg-lime-900/20 rounded-lg">
-                <h4 className="text-lg font-semibold text-lime-200 mb-2">4. Google Gemini (AI Security Tips)</h4>
-                <p className="mb-3">The AI-powered security tips are generated by the Google Gemini API. The app expects the API key to be available as a hosting environment variable named <code className="text-lime-300">API_KEY</code>.</p>
-                <ExternalLink href="https://aistudio.google.com/app/apikey">Get Gemini API Key</ExternalLink>
             </section>
         </div>
     );

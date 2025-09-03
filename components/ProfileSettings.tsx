@@ -6,9 +6,10 @@ import { getSupabase } from '../services/supabase';
 interface ProfileSettingsProps {
     user: User;
     onOpenDevSettings: () => void;
+    isAdmin: boolean;
 }
 
-const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user, onOpenDevSettings }) => {
+const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user, onOpenDevSettings, isAdmin }) => {
 
     const handleLogout = async () => {
         const supabase = getSupabase();
@@ -71,14 +72,16 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user, onOpenDevSettin
                 </div>
             </form>
 
-            <div className="pt-4 border-t border-white/10">
-                <button
-                    onClick={onOpenDevSettings}
-                    className="w-full text-center py-2 px-4 rounded-lg bg-gray-700 hover:bg-gray-600 transition-colors font-semibold"
-                >
-                    Developer Settings & API Guide
-                </button>
-            </div>
+            {isAdmin && (
+                <div className="pt-4 border-t border-white/10">
+                    <button
+                        onClick={onOpenDevSettings}
+                        className="w-full text-center py-2 px-4 rounded-lg bg-gray-700 hover:bg-gray-600 transition-colors font-semibold"
+                    >
+                        Developer Settings & API Guide
+                    </button>
+                </div>
+            )}
         </div>
     );
 };

@@ -19,6 +19,11 @@ import { getSupabase } from './services/supabase';
 import DeveloperSettings from './components/DeveloperSettings';
 
 type ActiveTab = 'send' | 'lock' | 'history' | 'request';
+
+// IMPORTANT: Replace this with your actual admin email address.
+// Only the user with this email will see the "Developer Settings" button.
+const ADMIN_EMAIL = 'lucasnale305@gmail.com'; 
+
 const TRANSACTION_FEE_RATE = 0.03; // 3%
 
 const App: React.FC = () => {
@@ -36,6 +41,7 @@ const App: React.FC = () => {
     const [accountToRemove, setAccountToRemove] = useState<Account | null>(null);
     const [isClaiming, setIsClaiming] = useState<string | null>(null); // Track claiming state by transaction ID
 
+    const isAdmin = user?.email === ADMIN_EMAIL;
 
     useEffect(() => {
         const supabase = getSupabase();
@@ -481,16 +487,17 @@ const App: React.FC = () => {
                         setIsProfileModalOpen(false);
                         setIsDevSettingsModalOpen(true);
                     }}
+                    isAdmin={isAdmin}
                  />
             </Modal>
-
+            
             <Modal isOpen={isDevSettingsModalOpen} onClose={() => setIsDevSettingsModalOpen(false)} title="Developer Settings & API Guide">
-                <DeveloperSettings />
+                <DeveloperSettings currentUserEmail={user.email!} />
             </Modal>
 
             <ConnectAccountModal 
-                isOpen={isConnectAccountModalOpen}
-                onClose={() => setIsConnectAccountModalOpen(false)}
+                isOpen={isConnectAccountModalOpen} 
+                onClose={() => setIsConnectAccountModalOpen(false)} 
                 onConnectionSuccess={handleConnectionSuccess}
             />
 
@@ -500,27 +507,23 @@ const App: React.FC = () => {
                 transaction={selectedTransaction}
             />
 
-            <Modal isOpen={!!accountToRemove} onClose={() => setAccountToRemove(null)} title="Confirm Removal">
-                <div className="space-y-6 text-white">
-                    <p>Are you sure you want to remove the account <span className="font-bold text-lime-300">{accountToRemove?.name}</span>? This action cannot be undone.</p>
-                    <div className="flex justify-end items-center gap-4 pt-4">
-                         <button 
-                            type="button" 
-                            onClick={() => setAccountToRemove(null)}
-                            className="bg-gray-600 hover:bg-gray-500 text-white font-bold py-2 px-6 rounded-lg transition-colors"
-                         >
-                            Cancel
-                        </button>
-                         <button 
-                            type="button"
-                            onClick={handleRemoveAccount}
-                            className="bg-red-600 hover:bg-red-500 text-white font-bold py-2 px-6 rounded-lg transition-colors"
-                         >
-                            Confirm Removal
-                        </button>
+             <Modal isOpen={!!accountToRemove} onClose={() => setAccountToRemove(null)} title="Confirm Account Removal">
+                {accountToRemove && (
+                    <div className="text-white space-y-4">
+                        <p>Are you sure you want to remove the account <strong className="font-bold text-lime-300">{accountToRemove.name}</strong>?</p>
+                        <p className="text-sm text-yellow-300 bg-yellow-900/30 p-3 rounded-lg">This action is irreversible. All active locked savings associated with this account must be withdrawn first.</p>
+                        <div className="flex justify-end space-x-4 pt-4">
+                            <button onClick={() => setAccountToRemove(null)} className="font-bold py-2 px-4 rounded-lg transition-colors bg-gray-600 hover:bg-gray-500">
+                                Cancel
+                            </button>
+                            <button onClick={handleRemoveAccount} className="font-bold py-2 px-4 rounded-lg transition-colors bg-red-600 hover:bg-red-500">
+                                Yes, Remove
+                            </button>
+                        </div>
                     </div>
-                </div>
+                )}
             </Modal>
+
         </div>
     );
 };
