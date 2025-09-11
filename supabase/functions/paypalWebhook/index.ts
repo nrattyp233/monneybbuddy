@@ -3,32 +3,45 @@
 // Use this URL as your PayPal Webhook endpoint (Sandbox/Live accordingly):
 // https://<project-ref>.functions.supabase.co/paypalWebhook
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import http from "http";
+import { createClient } from "@supabase/supabase-js";
 
-serve(async (req) => {
+const server = http.createServer(async (req, res) => {
   if (req.method !== "POST") {
-    return new Response("Method Not Allowed", { status: 405 });
+    res.writeHead(405, { "Content-Type": "text/plain" });
+    res.end("Method Not Allowed");
+    return;
   }
 
   // Capture PayPal verification headers (used for signature verification)
   const headers = req.headers;
-  const transmissionId = headers.get("paypal-transmission-id") ?? null;
-  const transmissionTime = headers.get("paypal-transmission-time") ?? null;
-  const transmissionSig = headers.get("paypal-transmission-sig") ?? null;
-  const certUrl = headers.get("paypal-cert-url") ?? null;
-  const authAlgo = headers.get("paypal-auth-algo") ?? null;
+  const transmissionId = headers["paypal-transmission-id"] ?? null;
+  const transmissionTime = headers["paypal-transmission-time"] ?? null;
+  const transmissionSig = headers["paypal-transmission-sig"] ?? null;
+  const certUrl = headers["paypal-cert-url"] ?? null;
+  const authAlgo = headers["paypal-auth-algo"] ?? null;
   // Prefer configured webhook ID from env over header
   const ENV = (globalThis as any).Deno?.env.get("PAYPAL_ENV") ?? "sandbox"; // sandbox | live
-  const WEBHOOK_ID = (globalThis as any).Deno?.env.get("PAYPAL_WEBHOOK_ID") ?? headers.get("webhook-id") ?? null;
+  const WEBHOOK_ID = (globalThis as any).Deno?.env.get("PAYPAL_WEBHOOK_ID") ?? headers["webhook-id"] ?? null;
   const CLIENT_ID = (globalThis as any).Deno?.env.get("PAYPAL_CLIENT_ID") ?? null;
   const CLIENT_SECRET = (globalThis as any).Deno?.env.get("PAYPAL_CLIENT_SECRET") ?? null;
-
-  let event: any;
+  interface PayPalWebhookEvent {
+    event_type?: string;
+    resource?: { id?: string };
+    [key: string]: any;
+  }
+  let event: PayPalWebhookEvent;
   try {
-    event = await req.json();
+    const buffers: Buffer[] = [];
+    for await (const chunk of req) {
+      buffers.push(chunk as Buffer);
+    }
+    const body = Buffer.concat(buffers).toString();
+    event = JSON.parse(body) as PayPalWebhookEvent;
   } catch (_err) {
-    return new Response("Invalid JSON", { status: 400 });
+    res.writeHead(400, { "Content-Type": "text/plain" });
+    res.end("Invalid JSON");
+    return;
   }
 
   const eventType = event?.event_type ?? "UNKNOWN";
@@ -125,10 +138,7 @@ serve(async (req) => {
     case "PAYMENT.CAPTURE.COMPLETED":
       // Handle successful captures
       break;
-    case "PAYMENT.CAPTURE.DENIED":
-    case "PAYMENT.CAPTURE.REFUNDED":
-      // Handle failures/refunds
-      break;
+    // Handle failures/refunds
     default:
       // No-op for unhandled events
       break;
@@ -136,3 +146,5 @@ serve(async (req) => {
 
   return new Response("OK", { status: 200 });
 });
+
+//# sourceMappingURL=paypalWebhook.js.map

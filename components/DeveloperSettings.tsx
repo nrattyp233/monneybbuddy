@@ -250,7 +250,8 @@ const DeveloperSettings: React.FC<DeveloperSettingsProps> = ({ currentUserEmail 
     };
     
     const InputField = ({ name, label, value, note }: { name: keyof typeof config; label: string; value: string; note?: string }) => {
-        const isSecret = name.toLowerCase().includes('secret') || name.toLowerCase().includes('key');
+        const nameStr = String(name);
+        const isSecret = nameStr.toLowerCase().includes('secret') || nameStr.toLowerCase().includes('key');
         return (
             <div>
                 <label htmlFor={name} className="block text-sm font-medium text-gray-300 mb-1">{label}</label>

@@ -1,13 +1,28 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
+import http from "http";
 import { corsHeaders, handleOptions } from "../_shared/cors.ts";
 
-serve(async (req) => {
-  const preflight = handleOptions(req);
-  if (preflight) return preflight;
-  try {
-    const { savingId } = await req.json();
-    return new Response(JSON.stringify({ ok: true, savingId }), { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } });
-  } catch (e) {
-    return new Response(JSON.stringify({ error: String(e) }), { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } });
+const server = http.createServer(async (req, res) => {
+  if (req.method === "OPTIONS") {
+    res.writeHead(204, { ...corsHeaders });
+    res.end();
+    return;
   }
+  try {
+    let body = "";
+    req.on("data", chunk => {
+      body += chunk;
+    });
+    req.on("end", () => {
+      const { savingId } = JSON.parse(body);
+      res.writeHead(200, { ...corsHeaders, "Content-Type": "application/json" });
+      res.end(JSON.stringify({ ok: true, savingId }));
+    });
+  } catch (e) {
+    res.writeHead(400, { ...corsHeaders, "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: String(e) }));
+  }
+});
+
+server.listen(8000, () => {
+  console.log("Server running on port 8000");
 });
