@@ -17,10 +17,13 @@ export enum TransactionStatus {
 }
 
 export interface GeoFence {
-  latitude: number;
-  longitude: number;
-  radiusKm: number;
+  // Support for drawn shapes (circles, polygons, etc.)
+  geometry: any; // GeoJSON-like geometry from leaflet-draw
   locationName: string;
+  // Legacy support for existing circle-based geofences
+  latitude?: number;
+  longitude?: number;
+  radiusKm?: number;
 }
 
 export interface TimeRestriction {
