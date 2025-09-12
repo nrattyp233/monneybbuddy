@@ -13,7 +13,7 @@ const Header: React.FC<HeaderProps> = ({ onProfileClick, notificationCount, onBe
       <div className="flex items-center justify-between">
         {/* Left Side: Logo and Title */}
         <div className="flex items-center space-x-3">
-          <MascotIcon className="w-12 h-12" />
+            <img src="/monkey.png" alt="App Mascot" className="w-14 h-14 rounded-full border-2 border-yellow-400 shadow-lg" />
           <div>
             <h1 className="text-2xl md:text-3xl font-bold text-white tracking-wide">
               Money Buddy

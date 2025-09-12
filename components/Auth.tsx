@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { getSupabase } from '../services/supabase';
-import { MascotIcon, ShieldCheckIcon, AlertTriangleIcon, CheckCircleIcon } from './icons';
+import { ShieldCheckIcon, AlertTriangleIcon, CheckCircleIcon } from './icons';
+import MascotGuide from './MascotGuide';
+import Mascot3DCanvas from './Mascot3DCanvas';
 
 const Auth: React.FC = () => {
     const [isLoginView, setIsLoginView] = useState(true);
@@ -71,10 +73,15 @@ const Auth: React.FC = () => {
 
     return (
         <div className="min-h-screen text-white font-sans antialiased flex items-center justify-center p-4 animate-fade-in-down">
-             <div className="relative z-10 w-full max-w-md">
+            <div className="relative z-10 w-full max-w-md">
                 <div className="bg-black/30 backdrop-blur-lg border border-lime-400/20 rounded-2xl shadow-2xl shadow-lime-500/10 p-8">
+                    {/* 3D Mascot Viewer */}
                     <div className="text-center mb-8">
-                        <MascotIcon className="w-24 h-24 mx-auto mb-4" />
+                        <Mascot3DCanvas />
+                        <MascotGuide
+                            message={isLoginView ? "Hi! I'm your Money Buddy. Sign in to get started!" : "Let's create your account together!"}
+                            animate={successMessage ? 'confetti' : 'wave'}
+                        />
                         <h1 className="text-3xl font-bold text-white tracking-wide">
                             {isLoginView ? 'Welcome Back!' : 'Create Account'}
                         </h1>
