@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { Account, GeoFence, TimeRestriction } from '../types';
 import { MapPinIcon, ClockIcon, SearchIcon, RefreshCwIcon, DollarSignIcon } from './icons';
-import { MapContainer, TileLayer, Circle, useMap, useMapEvents } from 'react-leaflet';
+import { MapContainer, TileLayer } from 'react-leaflet';
+import { EditControl } from 'react-leaflet-draw';
+
+// TS shim: in some setups React-Leaflet prop types may conflict; cast to any to keep DX smooth
+const RLMapContainer: any = MapContainer as any;
+const RLTileLayer: any = TileLayer as any;
+const RLCircle: any = Circle as any;
+const RLMarker: any = Marker as any;
 
 interface SendMoneyProps {
     accounts: Account[];
@@ -50,28 +57,10 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
     // State for map
     const [locationQuery, setLocationQuery] = useState('');
     const [mapCenter, setMapCenter] = useState<[number, number]>([40.7128, -74.0060]); // Default: NYC
-    const [fenceRadius, setFenceRadius] = useState(5); // In km
-    const [markerPosition, setMarkerPosition] = useState<[number, number] | null>(null);
+    const [drawnGeoJson, setDrawnGeoJson] = useState<any>(null);
     const [isSearching, setIsSearching] = useState(false);
     const [locationName, setLocationName] = useState('');
 
-    const MapClickHandler = () => {
-        useMapEvents({
-            click(e) {
-                setMarkerPosition([e.latlng.lat, e.latlng.lng]);
-                 // Optional: Reverse geocode to get address from coordinates
-                fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${e.latlng.lat}&lon=${e.latlng.lng}`)
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data && data.display_name) {
-                            setLocationName(data.display_name);
-                            setLocationQuery(data.display_name.split(',')[0]);
-                        }
-                    });
-            },
-        });
-        return null;
-    };
 
     const handleLocationSearch = async () => {
         if (!locationQuery) return;
@@ -110,12 +99,10 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
 
         let geoFence: GeoFence | undefined = undefined;
-        if (useGeoFence && markerPosition) {
-            geoFence = { 
-                latitude: markerPosition[0],
-                longitude: markerPosition[1],
-                radiusKm: fenceRadius,
-                locationName: locationName || "Selected Area"
+        if (useGeoFence && drawnGeoJson) {
+            geoFence = {
+                geoJson: drawnGeoJson,
+                locationName: locationName || "Custom Area"
             };
         }
 
@@ -192,36 +179,31 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                     </div>
                     {useGeoFence && (
                         <div className="pl-2 pr-2 md:pl-4 md:pr-4 space-y-4">
-                            <div className="flex flex-col sm:flex-row gap-2">
-                                <input 
-                                    type="text" 
-                                    id="location-search"
-                                    name="location-search"
-                                    aria-label="Search for a location for the geofence"
-                                    value={locationQuery} 
-                                    onChange={e => setLocationQuery(e.target.value)} 
-                                    onKeyDown={e => e.key === 'Enter' && handleLocationSearch()} 
-                                    placeholder="e.g., San Francisco, CA"
-                                    autoComplete="off"
-                                    className="flex-grow w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" 
-                                />
-                                <button type="button" onClick={handleLocationSearch} disabled={isSearching} className="w-full sm:w-auto flex items-center justify-center px-4 py-2 bg-lime-500 hover:bg-lime-400 text-purple-900 font-bold rounded-lg transition-colors disabled:opacity-50">
-                                    <SearchIcon className="w-5 h-5 mr-2"/>
-                                    {isSearching ? 'Searching...' : 'Search'}
-                                </button>
-                            </div>
+                            <p className="text-xs text-gray-400">Draw a circle or polygon on the map to define your geofence area. Use your finger or mouse.</p>
                             <div className="h-72 w-full rounded-lg overflow-hidden border-2 border-lime-400/30 shadow-lg">
                                 <MapContainer center={mapCenter} zoom={13} style={{ height: '100%', width: '100%' }} scrollWheelZoom={true}>
-                                    <ChangeView center={mapCenter} zoom={markerPosition ? 13 : 8} />
-                                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' />
-                                    <MapClickHandler />
-                                    {markerPosition && <Circle center={markerPosition} pathOptions={{ color: '#a3e635', fillColor: '#a3e635', fillOpacity: 0.3 }} radius={fenceRadius * 1000} />}
+                                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" />
+                                    <EditControl
+                                        position="topright"
+                                        onCreated={e => {
+                                            setDrawnGeoJson(e.layer.toGeoJSON());
+                                            if (e.layerType === 'circle') {
+                                                setLocationName('Circle Area');
+                                            } else if (e.layerType === 'polygon') {
+                                                setLocationName('Polygon Area');
+                                            }
+                                        }}
+                                        onDeleted={() => setDrawnGeoJson(null)}
+                                        draw={{
+                                            rectangle: false,
+                                            polyline: false,
+                                            marker: false,
+                                            circlemarker: false,
+                                            circle: true,
+                                            polygon: true,
+                                        }}
+                                    />
                                 </MapContainer>
-                            </div>
-                            <div>
-                                <label htmlFor="radius" className="block text-sm font-medium text-gray-300 mb-2">Fence Radius: <span className="font-bold text-lime-300">{fenceRadius} km</span></label>
-                                <input id="radius" name="radius" type="range" min="1" max="50" step="1" value={fenceRadius} onChange={e => setFenceRadius(parseInt(e.target.value, 10))} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg accent-lime-500" />
-                                <p className="text-xs text-gray-400 mt-2">Click on the map to set the center of the geofence.</p>
                             </div>
                         </div>
                     )}
