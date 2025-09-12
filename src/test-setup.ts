@@ -31,6 +31,8 @@ vi.mock('react-leaflet', () => ({
     flyTo: vi.fn(),
     on: vi.fn(),
     off: vi.fn(),
+    setView: vi.fn(),
+    invalidateSize: vi.fn()
   })
 }));
 

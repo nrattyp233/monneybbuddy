@@ -95,7 +95,9 @@ const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({ transac
                         <p className="text-xs text-gray-400">
                             {geoFence.shape === 'circle' && geoFence.radiusKm 
                                 ? `Claimable within ${geoFence.radiusKm}km of ${geoFence.locationName}` 
-                                : `Claimable within ${geoFence.locationName}`}
+                                : geoFence.radiusKm
+                                    ? `Claimable within ${geoFence.radiusKm}km of ${geoFence.locationName}`
+                                    : `Claimable within ${geoFence.locationName}`}
                         </p>
                          <div className="h-48 w-full rounded-lg overflow-hidden border border-lime-400/30">
                             <MapContainer center={[geoFence.latitude, geoFence.longitude]} zoom={11} style={{ height: '100%', width: '100%' }} scrollWheelZoom={false}>
