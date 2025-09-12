@@ -17,9 +17,7 @@ export enum TransactionStatus {
 }
 
 export interface GeoFence {
-  latitude: number;
-  longitude: number;
-  radiusKm: number;
+  geoJson: any; // GeoJSON object representing the drawn shape
   locationName: string;
 }
 

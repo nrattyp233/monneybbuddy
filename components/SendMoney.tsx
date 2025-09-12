@@ -1,14 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Account, GeoFence, TimeRestriction } from '../types';
 import { MapPinIcon, ClockIcon, SearchIcon, RefreshCwIcon, DollarSignIcon } from './icons';
-import { MapContainer, TileLayer } from 'react-leaflet';
+import { MapContainer, TileLayer, useMap } from 'react-leaflet';
 import { EditControl } from 'react-leaflet-draw';
-
-// TS shim: in some setups React-Leaflet prop types may conflict; cast to any to keep DX smooth
-const RLMapContainer: any = MapContainer as any;
-const RLTileLayer: any = TileLayer as any;
-const RLCircle: any = Circle as any;
-const RLMarker: any = Marker as any;
 
 interface SendMoneyProps {
     accounts: Account[];
@@ -72,7 +66,6 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                 const { lat, lon, display_name } = data[0];
                 const newCenter: [number, number] = [parseFloat(lat), parseFloat(lon)];
                 setMapCenter(newCenter);
-                setMarkerPosition(newCenter);
                 setLocationName(display_name);
             } else {
                 alert('Location not found.');
