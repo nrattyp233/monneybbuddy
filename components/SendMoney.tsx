@@ -1,22 +1,14 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Account, GeoFence, TimeRestriction } from '../types';
-import { MapPinIcon, ClockIcon, SearchIcon, RefreshCwIcon, DollarSignIcon } from './icons';
-import { MapContainer, TileLayer, Circle, useMap, useMapEvents } from 'react-leaflet';
+import { MapPinIcon, ClockIcon, RefreshCwIcon, DollarSignIcon } from './icons';
+import { MapContainer, TileLayer, FeatureGroup } from 'react-leaflet';
+import { EditControl } from 'react-leaflet-draw';
+import L from 'leaflet';
+import 'leaflet-draw';
 
 interface SendMoneyProps {
     accounts: Account[];
     onSend: (fromAccountId: string, to: string, amount: number, description: string, geoFence: GeoFence | undefined, timeRestriction: TimeRestriction | undefined) => Promise<void>;
-}
-
-// Helper component to change map view programmatically
-function ChangeView({ center, zoom }: { center: [number, number], zoom: number }) {
-    const map = useMap();
-    useEffect(() => {
-        if (center) {
-            map.flyTo(center, zoom);
-        }
-    }, [center, zoom, map]);
-    return null;
 }
 
 const TRANSACTION_FEE_RATE = 0.03; // 3%
@@ -35,6 +27,10 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
     const [fee, setFee] = useState(0);
     const [totalDebit, setTotalDebit] = useState(0);
 
+    // Drawing state
+    const [drawnLayers, setDrawnLayers] = useState<L.Layer[]>([]);
+    const featureGroupRef = useRef<L.FeatureGroup>(null);
+
     useEffect(() => {
         const numericAmount = parseFloat(amount);
         if (!isNaN(numericAmount) && numericAmount > 0) {
@@ -47,55 +43,30 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
     }, [amount]);
 
-    // State for map
-    const [locationQuery, setLocationQuery] = useState('');
-    const [mapCenter, setMapCenter] = useState<[number, number]>([40.7128, -74.0060]); // Default: NYC
-    const [fenceRadius, setFenceRadius] = useState(5); // In km
-    const [markerPosition, setMarkerPosition] = useState<[number, number] | null>(null);
-    const [isSearching, setIsSearching] = useState(false);
-    const [locationName, setLocationName] = useState('');
-
-    const MapClickHandler = () => {
-        useMapEvents({
-            click(e) {
-                setMarkerPosition([e.latlng.lat, e.latlng.lng]);
-                 // Optional: Reverse geocode to get address from coordinates
-                fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${e.latlng.lat}&lon=${e.latlng.lng}`)
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data && data.display_name) {
-                            setLocationName(data.display_name);
-                            setLocationQuery(data.display_name.split(',')[0]);
-                        }
-                    });
-            },
-        });
-        return null;
-    };
-
-    const handleLocationSearch = async () => {
-        if (!locationQuery) return;
-        setIsSearching(true);
-        try {
-            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(locationQuery)}`);
-            const data = await response.json();
-            if (data && data.length > 0) {
-                const { lat, lon, display_name } = data[0];
-                const newCenter: [number, number] = [parseFloat(lat), parseFloat(lon)];
-                setMapCenter(newCenter);
-                setMarkerPosition(newCenter);
-                setLocationName(display_name);
-            } else {
-                alert('Location not found.');
-            }
-        } catch (error) {
-            console.error("Error searching for location:", error);
-            alert('Failed to search for location.');
-        } finally {
-            setIsSearching(false);
+    // Handle drawing events
+    const onCreated = (e: any) => {
+        const { layer } = e;
+        setDrawnLayers([layer]);
+        
+        // Clear any previous drawings
+        if (featureGroupRef.current) {
+            featureGroupRef.current.clearLayers();
+            featureGroupRef.current.addLayer(layer);
         }
     };
-    
+
+    const onDeleted = () => {
+        setDrawnLayers([]);
+    };
+
+    const onEdited = (e: any) => {
+        const { layers } = e;
+        const updatedLayers: L.Layer[] = [];
+        layers.eachLayer((layer: L.Layer) => {
+            updatedLayers.push(layer);
+        });
+        setDrawnLayers(updatedLayers);
+    };
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!fromAccountId || !recipient || !amount || parseFloat(amount) <= 0 || !description) {
@@ -110,13 +81,42 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
 
         let geoFence: GeoFence | undefined = undefined;
-        if (useGeoFence && markerPosition) {
-            geoFence = { 
-                latitude: markerPosition[0],
-                longitude: markerPosition[1],
-                radiusKm: fenceRadius,
-                locationName: locationName || "Selected Area"
-            };
+        if (useGeoFence && drawnLayers.length > 0) {
+            const layer = drawnLayers[0];
+            
+            // Check if it has circle properties (getLatLng and getRadius)
+            if (typeof (layer as any).getLatLng === 'function' && typeof (layer as any).getRadius === 'function') {
+                // Handle circle
+                const center = (layer as any).getLatLng();
+                const radius = (layer as any).getRadius() / 1000; // Convert meters to km
+                geoFence = {
+                    latitude: center.lat,
+                    longitude: center.lng,
+                    radiusKm: radius,
+                    locationName: "Drawn Circle",
+                    shape: 'circle'
+                };
+            } else if (typeof (layer as any).getLatLngs === 'function') {
+                // Handle polygon
+                const latLngs = (layer as any).getLatLngs()[0] as L.LatLng[];
+                const coordinates = latLngs.map(latlng => [latlng.lat, latlng.lng]);
+                
+                // Calculate center of polygon
+                const center = latLngs.reduce(
+                    (acc, latlng) => ({ lat: acc.lat + latlng.lat, lng: acc.lng + latlng.lng }),
+                    { lat: 0, lng: 0 }
+                );
+                center.lat /= latLngs.length;
+                center.lng /= latLngs.length;
+                
+                geoFence = {
+                    latitude: center.lat,
+                    longitude: center.lng,
+                    locationName: "Drawn Area",
+                    shape: 'polygon',
+                    coordinates: coordinates
+                };
+            }
         }
 
         let timeRestriction: TimeRestriction | undefined = undefined;
@@ -132,6 +132,10 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
             setRecipient('');
             setAmount('');
             setDescription('');
+            setDrawnLayers([]);
+            if (featureGroupRef.current) {
+                featureGroupRef.current.clearLayers();
+            }
         } catch (error) {
             // Error is alerted in the parent component
         } finally {
@@ -186,43 +190,65 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                              <span className="font-semibold text-white">Add Geofence</span>
                         </div>
                         <label className="relative inline-flex items-center cursor-pointer">
-                            <input type="checkbox" checked={useGeoFence} onChange={() => setUseGeoFence(!useGeoFence)} className="sr-only peer" />
+                            <input 
+                                type="checkbox" 
+                                checked={useGeoFence} 
+                                onChange={() => setUseGeoFence(!useGeoFence)} 
+                                className="sr-only peer"
+                                aria-label="Add Geofence"
+                            />
                             <div className="w-11 h-6 bg-gray-600 rounded-full peer peer-focus:ring-2 peer-focus:ring-lime-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-lime-500"></div>
                         </label>
                     </div>
                     {useGeoFence && (
                         <div className="pl-2 pr-2 md:pl-4 md:pr-4 space-y-4">
-                            <div className="flex flex-col sm:flex-row gap-2">
-                                <input 
-                                    type="text" 
-                                    id="location-search"
-                                    name="location-search"
-                                    aria-label="Search for a location for the geofence"
-                                    value={locationQuery} 
-                                    onChange={e => setLocationQuery(e.target.value)} 
-                                    onKeyDown={e => e.key === 'Enter' && handleLocationSearch()} 
-                                    placeholder="e.g., San Francisco, CA"
-                                    autoComplete="off"
-                                    className="flex-grow w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" 
-                                />
-                                <button type="button" onClick={handleLocationSearch} disabled={isSearching} className="w-full sm:w-auto flex items-center justify-center px-4 py-2 bg-lime-500 hover:bg-lime-400 text-purple-900 font-bold rounded-lg transition-colors disabled:opacity-50">
-                                    <SearchIcon className="w-5 h-5 mr-2"/>
-                                    {isSearching ? 'Searching...' : 'Search'}
-                                </button>
-                            </div>
                             <div className="h-72 w-full rounded-lg overflow-hidden border-2 border-lime-400/30 shadow-lg">
-                                <MapContainer center={mapCenter} zoom={13} style={{ height: '100%', width: '100%' }} scrollWheelZoom={true}>
-                                    <ChangeView center={mapCenter} zoom={markerPosition ? 13 : 8} />
-                                    <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' />
-                                    <MapClickHandler />
-                                    {markerPosition && <Circle center={markerPosition} pathOptions={{ color: '#a3e635', fillColor: '#a3e635', fillOpacity: 0.3 }} radius={fenceRadius * 1000} />}
+                                <MapContainer 
+                                    center={[40.7128, -74.0060]} 
+                                    zoom={10} 
+                                    style={{ height: '100%', width: '100%' }} 
+                                    scrollWheelZoom={true}
+                                >
+                                    <TileLayer 
+                                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" 
+                                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' 
+                                    />
+                                    <FeatureGroup ref={featureGroupRef}>
+                                        <EditControl
+                                            position="topright"
+                                            onCreated={onCreated}
+                                            onDeleted={onDeleted}
+                                            onEdited={onEdited}
+                                            draw={{
+                                                rectangle: false,
+                                                marker: false,
+                                                polyline: false,
+                                                circlemarker: false,
+                                                circle: {
+                                                    shapeOptions: {
+                                                        color: '#a3e635',
+                                                        fillColor: '#a3e635',
+                                                        fillOpacity: 0.3
+                                                    }
+                                                },
+                                                polygon: {
+                                                    shapeOptions: {
+                                                        color: '#a3e635',
+                                                        fillColor: '#a3e635',
+                                                        fillOpacity: 0.3
+                                                    }
+                                                }
+                                            }}
+                                            edit={{
+                                                featureGroup: featureGroupRef.current
+                                            }}
+                                        />
+                                    </FeatureGroup>
                                 </MapContainer>
                             </div>
-                            <div>
-                                <label htmlFor="radius" className="block text-sm font-medium text-gray-300 mb-2">Fence Radius: <span className="font-bold text-lime-300">{fenceRadius} km</span></label>
-                                <input id="radius" name="radius" type="range" min="1" max="50" step="1" value={fenceRadius} onChange={e => setFenceRadius(parseInt(e.target.value, 10))} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg accent-lime-500" />
-                                <p className="text-xs text-gray-400 mt-2">Click on the map to set the center of the geofence.</p>
-                            </div>
+                            <p className="text-xs text-gray-400">
+                                Use the drawing tools to create a geofence area. You can draw a circle or polygon to define where the payment can be claimed.
+                            </p>
                         </div>
                     )}
                      <div className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg">
@@ -231,7 +257,13 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                             <span className="font-semibold text-white">Add Time Restriction</span>
                         </div>
                         <label className="relative inline-flex items-center cursor-pointer">
-                             <input type="checkbox" checked={useTimeRestriction} onChange={() => setUseTimeRestriction(!useTimeRestriction)} className="sr-only peer" />
+                             <input 
+                                type="checkbox" 
+                                checked={useTimeRestriction} 
+                                onChange={() => setUseTimeRestriction(!useTimeRestriction)} 
+                                className="sr-only peer"
+                                aria-label="Add Time Restriction"
+                            />
                             <div className="w-11 h-6 bg-gray-600 rounded-full peer peer-focus:ring-2 peer-focus:ring-lime-500 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-lime-500"></div>
                         </label>
                     </div>

@@ -1,7 +1,7 @@
 import React, { useEffect } from 'react';
 import Modal from './Modal';
 import { Transaction, TransactionStatus, GeoFence } from '../types';
-import { MapContainer, TileLayer, Circle, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Circle, Polygon, useMap } from 'react-leaflet';
 import { MapPinIcon, ClockIcon, DollarSignIcon } from './icons';
 
 interface TransactionDetailModalProps {
@@ -92,12 +92,33 @@ const TransactionDetailModal: React.FC<TransactionDetailModalProps> = ({ transac
                             <MapPinIcon className="w-5 h-5"/>
                             <h4 className="font-semibold">Geofence Active</h4>
                         </div>
-                        <p className="text-xs text-gray-400">Claimable within {geoFence.radiusKm}km of {geoFence.locationName}</p>
+                        <p className="text-xs text-gray-400">
+                            {geoFence.shape === 'circle' && geoFence.radiusKm 
+                                ? `Claimable within ${geoFence.radiusKm}km of ${geoFence.locationName}` 
+                                : `Claimable within ${geoFence.locationName}`}
+                        </p>
                          <div className="h-48 w-full rounded-lg overflow-hidden border border-lime-400/30">
                             <MapContainer center={[geoFence.latitude, geoFence.longitude]} zoom={11} style={{ height: '100%', width: '100%' }} scrollWheelZoom={false}>
                                 <RecenterMap center={[geoFence.latitude, geoFence.longitude]} zoom={11} />
                                 <TileLayer url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png" attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>' />
-                                <Circle center={[geoFence.latitude, geoFence.longitude]} pathOptions={{ color: '#a3e635', fillColor: '#a3e635', fillOpacity: 0.3 }} radius={geoFence.radiusKm * 1000} />
+                                {geoFence.shape === 'circle' && geoFence.radiusKm ? (
+                                    <Circle 
+                                        center={[geoFence.latitude, geoFence.longitude]} 
+                                        pathOptions={{ color: '#a3e635', fillColor: '#a3e635', fillOpacity: 0.3 }} 
+                                        radius={geoFence.radiusKm * 1000} 
+                                    />
+                                ) : geoFence.coordinates ? (
+                                    <Polygon 
+                                        positions={geoFence.coordinates as [number, number][]} 
+                                        pathOptions={{ color: '#a3e635', fillColor: '#a3e635', fillOpacity: 0.3 }} 
+                                    />
+                                ) : (
+                                    <Circle 
+                                        center={[geoFence.latitude, geoFence.longitude]} 
+                                        pathOptions={{ color: '#a3e635', fillColor: '#a3e635', fillOpacity: 0.3 }} 
+                                        radius={(geoFence.radiusKm || 1) * 1000} 
+                                    />
+                                )}
                             </MapContainer>
                         </div>
                     </div>

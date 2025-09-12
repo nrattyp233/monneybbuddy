@@ -17,10 +17,12 @@ export enum TransactionStatus {
 }
 
 export interface GeoFence {
-  latitude: number;
-  longitude: number;
-  radiusKm: number;
+  latitude: number;  // For circles, or center lat for polygons
+  longitude: number; // For circles, or center lng for polygons  
+  radiusKm?: number; // Optional for circles
   locationName: string;
+  shape?: 'circle' | 'polygon';
+  coordinates?: number[][]; // For polygon coordinates [[lat,lng], [lat,lng], ...]
 }
 
 export interface TimeRestriction {
