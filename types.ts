@@ -21,6 +21,11 @@ export interface GeoFence {
   longitude: number;
   radiusKm: number;
   locationName: string;
+  // Support for drawn shapes
+  drawnShape?: {
+    type: 'circle' | 'polygon';
+    coordinates: number[][]; // Array of [lat, lng] pairs for polygon, or [center_lat, center_lng, radius_point_lat, radius_point_lng] for circle
+  };
 }
 
 export interface TimeRestriction {

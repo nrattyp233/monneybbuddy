@@ -1,7 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { Account, GeoFence, TimeRestriction } from '../types';
-import { MapPinIcon, ClockIcon, SearchIcon, RefreshCwIcon, DollarSignIcon } from './icons';
-import { MapContainer, TileLayer, Circle, useMap, useMapEvents } from 'react-leaflet';
+import { MapPinIcon, ClockIcon, RefreshCwIcon, DollarSignIcon } from './icons';
+import { MapContainer, TileLayer, useMap } from 'react-leaflet';
+import { FeatureGroup } from 'react-leaflet';
+import { EditControl } from 'react-leaflet-draw';
+import 'leaflet/dist/leaflet.css';
+import 'leaflet-draw/dist/leaflet.draw.css';
 
 interface SendMoneyProps {
     accounts: Account[];
@@ -31,6 +35,9 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
     const [hours, setHours] = useState('24');
     const [isProcessing, setIsProcessing] = useState(false);
     
+    // Drawn geofence area
+    const [drawnGeoFence, setDrawnGeoFence] = useState<GeoFence | null>(null);
+    
     // Fee calculation
     const [fee, setFee] = useState(0);
     const [totalDebit, setTotalDebit] = useState(0);
@@ -47,53 +54,73 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
     }, [amount]);
 
-    // State for map
-    const [locationQuery, setLocationQuery] = useState('');
-    const [mapCenter, setMapCenter] = useState<[number, number]>([40.7128, -74.0060]); // Default: NYC
-    const [fenceRadius, setFenceRadius] = useState(5); // In km
-    const [markerPosition, setMarkerPosition] = useState<[number, number] | null>(null);
-    const [isSearching, setIsSearching] = useState(false);
-    const [locationName, setLocationName] = useState('');
+    // Map center for initial view
+    const [mapCenter] = useState<[number, number]>([40.7128, -74.0060]); // Default: NYC
 
-    const MapClickHandler = () => {
-        useMapEvents({
-            click(e) {
-                setMarkerPosition([e.latlng.lat, e.latlng.lng]);
-                 // Optional: Reverse geocode to get address from coordinates
-                fetch(`https://nominatim.openstreetmap.org/reverse?format=json&lat=${e.latlng.lat}&lon=${e.latlng.lng}`)
-                    .then(res => res.json())
-                    .then(data => {
-                        if (data && data.display_name) {
-                            setLocationName(data.display_name);
-                            setLocationQuery(data.display_name.split(',')[0]);
-                        }
-                    });
-            },
-        });
-        return null;
+    // Handle drawn shapes
+    const handleDrawCreated = (e: any) => {
+        const { layer, layerType } = e;
+        
+        let geoFence: GeoFence;
+        
+        if (layerType === 'circle') {
+            const center = layer.getLatLng();
+            const radius = layer.getRadius(); // in meters
+            geoFence = {
+                latitude: center.lat,
+                longitude: center.lng,
+                radiusKm: radius / 1000, // convert to km
+                locationName: "Drawn Circle",
+                drawnShape: {
+                    type: 'circle',
+                    coordinates: [
+                        [center.lat, center.lng],
+                        [center.lat + (radius / 111320), center.lng] // approximate radius point
+                    ]
+                }
+            };
+        } else if (layerType === 'polygon') {
+            const latLngs = layer.getLatLngs()[0]; // Get first ring for simple polygon
+            const coordinates = latLngs.map((latLng: any) => [latLng.lat, latLng.lng]);
+            
+            // Calculate center and approximate radius for backwards compatibility
+            const bounds = layer.getBounds();
+            const center = bounds.getCenter();
+            const radiusKm = Math.max(
+                bounds.getNorthEast().distanceTo(center) / 1000,
+                bounds.getSouthWest().distanceTo(center) / 1000
+            );
+            
+            geoFence = {
+                latitude: center.lat,
+                longitude: center.lng,
+                radiusKm,
+                locationName: "Drawn Area",
+                drawnShape: {
+                    type: 'polygon',
+                    coordinates
+                }
+            };
+        } else {
+            // Default fallback
+            const center = layer.getLatLng ? layer.getLatLng() : layer.getBounds().getCenter();
+            geoFence = {
+                latitude: center.lat,
+                longitude: center.lng,
+                radiusKm: 5,
+                locationName: "Drawn Shape",
+                drawnShape: {
+                    type: 'polygon',
+                    coordinates: [[center.lat, center.lng]]
+                }
+            };
+        }
+        
+        setDrawnGeoFence(geoFence);
     };
 
-    const handleLocationSearch = async () => {
-        if (!locationQuery) return;
-        setIsSearching(true);
-        try {
-            const response = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&q=${encodeURIComponent(locationQuery)}`);
-            const data = await response.json();
-            if (data && data.length > 0) {
-                const { lat, lon, display_name } = data[0];
-                const newCenter: [number, number] = [parseFloat(lat), parseFloat(lon)];
-                setMapCenter(newCenter);
-                setMarkerPosition(newCenter);
-                setLocationName(display_name);
-            } else {
-                alert('Location not found.');
-            }
-        } catch (error) {
-            console.error("Error searching for location:", error);
-            alert('Failed to search for location.');
-        } finally {
-            setIsSearching(false);
-        }
+    const handleDrawDeleted = () => {
+        setDrawnGeoFence(null);
     };
     
     const handleSubmit = async (e: React.FormEvent) => {
@@ -110,13 +137,8 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
 
         let geoFence: GeoFence | undefined = undefined;
-        if (useGeoFence && markerPosition) {
-            geoFence = { 
-                latitude: markerPosition[0],
-                longitude: markerPosition[1],
-                radiusKm: fenceRadius,
-                locationName: locationName || "Selected Area"
-            };
+        if (useGeoFence && drawnGeoFence) {
+            geoFence = drawnGeoFence;
         }
 
         let timeRestriction: TimeRestriction | undefined = undefined;
@@ -192,37 +214,55 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                     </div>
                     {useGeoFence && (
                         <div className="pl-2 pr-2 md:pl-4 md:pr-4 space-y-4">
-                            <div className="flex flex-col sm:flex-row gap-2">
-                                <input 
-                                    type="text" 
-                                    id="location-search"
-                                    name="location-search"
-                                    aria-label="Search for a location for the geofence"
-                                    value={locationQuery} 
-                                    onChange={e => setLocationQuery(e.target.value)} 
-                                    onKeyDown={e => e.key === 'Enter' && handleLocationSearch()} 
-                                    placeholder="e.g., San Francisco, CA"
-                                    autoComplete="off"
-                                    className="flex-grow w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" 
-                                />
-                                <button type="button" onClick={handleLocationSearch} disabled={isSearching} className="w-full sm:w-auto flex items-center justify-center px-4 py-2 bg-lime-500 hover:bg-lime-400 text-purple-900 font-bold rounded-lg transition-colors disabled:opacity-50">
-                                    <SearchIcon className="w-5 h-5 mr-2"/>
-                                    {isSearching ? 'Searching...' : 'Search'}
-                                </button>
-                            </div>
                             <div className="h-72 w-full rounded-lg overflow-hidden border-2 border-lime-400/30 shadow-lg">
                                 <MapContainer center={mapCenter} zoom={13} style={{ height: '100%', width: '100%' }} scrollWheelZoom={true}>
-                                    <ChangeView center={mapCenter} zoom={markerPosition ? 13 : 8} />
+                                    <ChangeView center={mapCenter} zoom={8} />
                                     <TileLayer url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png" attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors' />
-                                    <MapClickHandler />
-                                    {markerPosition && <Circle center={markerPosition} pathOptions={{ color: '#a3e635', fillColor: '#a3e635', fillOpacity: 0.3 }} radius={fenceRadius * 1000} />}
+                                    <FeatureGroup>
+                                        <EditControl
+                                            position="topright"
+                                            onCreated={handleDrawCreated}
+                                            onDeleted={handleDrawDeleted}
+                                            draw={{
+                                                rectangle: false,
+                                                polyline: false,
+                                                marker: false,
+                                                circlemarker: false,
+                                                circle: {
+                                                    shapeOptions: {
+                                                        color: '#a3e635',
+                                                        fillColor: '#a3e635',
+                                                        fillOpacity: 0.3
+                                                    }
+                                                },
+                                                polygon: {
+                                                    shapeOptions: {
+                                                        color: '#a3e635',
+                                                        fillColor: '#a3e635',
+                                                        fillOpacity: 0.3
+                                                    }
+                                                }
+                                            }}
+                                            edit={{
+                                                featureGroup: undefined // We'll handle this differently to avoid re-render issues
+                                            }}
+                                        />
+                                    </FeatureGroup>
                                 </MapContainer>
                             </div>
-                            <div>
-                                <label htmlFor="radius" className="block text-sm font-medium text-gray-300 mb-2">Fence Radius: <span className="font-bold text-lime-300">{fenceRadius} km</span></label>
-                                <input id="radius" name="radius" type="range" min="1" max="50" step="1" value={fenceRadius} onChange={e => setFenceRadius(parseInt(e.target.value, 10))} className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg accent-lime-500" />
-                                <p className="text-xs text-gray-400 mt-2">Click on the map to set the center of the geofence.</p>
-                            </div>
+                            {drawnGeoFence && (
+                                <div className="p-3 bg-lime-500/10 border border-lime-500/30 rounded-lg">
+                                    <p className="text-sm text-lime-300 font-medium">
+                                        ✓ Geofence drawn: {drawnGeoFence.locationName}
+                                    </p>
+                                    <p className="text-xs text-gray-400 mt-1">
+                                        Area: ~{drawnGeoFence.radiusKm.toFixed(1)}km radius
+                                    </p>
+                                </div>
+                            )}
+                            <p className="text-xs text-gray-400">
+                                Use the drawing tools on the map to create a geofence area. Draw a circle or polygon to define where the recipient can claim this transaction.
+                            </p>
                         </div>
                     )}
                      <div className="flex items-center justify-between p-3 bg-gray-900/50 rounded-lg">
