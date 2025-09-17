@@ -15,6 +15,8 @@ View your app in AI Studio: https://ai.studio/apps/drive/1w-d5H9Zppz8O0R_4UlXON_
 
 1. Install dependencies:
    `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
+2. (Optional) Set the `VITE_GEMINI_API_KEY` in `.env.local` to your Gemini API key.
+   - If this is not set, the app will still run and show a static default security tip.
+   - When provided, a dynamic AI‑generated security tip will be fetched at runtime using Gemini.
 3. Run the app:
    `npm run dev`
