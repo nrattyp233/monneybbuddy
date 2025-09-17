@@ -1,0 +1,14 @@
+[build]
+  command = "npm run build"
+  publish = "dist"
+
+  # Allowlist public Supabase env vars so Netlify secret scanning does not fail the build.
+  # These values (URL + anon key) are intentionally public; database protection relies on RLS.
+  [build.environment]
+    SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY"
+
+# Single Page App fallback
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
