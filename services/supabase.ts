@@ -1,8 +1,8 @@
-import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient, type SupabaseClient } from '@supabase/supabase-js';
 
-// Hardcode credentials to bypass platform environment variable issues.
-const SUPABASE_URL = "https://thdmywgjbhdtgtqnqizn.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoZG15d2dqYmhkdGd0cW5xaXpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM3MzY5ODYsImV4cCI6MjA2OTMxMjk4Nn0.CLUC8eFtRQBHz6-570NJWZ8QIZs3ty0QGuDmEF5eeFc";
+// Read credentials from Vite environment variables
+const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL as string | undefined;
+const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY as string | undefined;
 
 // Use a singleton pattern to ensure the client is created only once.
 let supabaseInstance: SupabaseClient | null = null;
@@ -16,8 +16,7 @@ export const getSupabase = (): SupabaseClient => {
     }
 
     if (!SUPABASE_URL || !SUPABASE_ANON_KEY) {
-        // This is a safeguard, but with hardcoded values, it should not be triggered.
-        throw new Error('Supabase credentials are not set in services/supabase.ts');
+        throw new Error('Missing VITE_SUPABASE_URL or VITE_SUPABASE_ANON_KEY. Set them in your environment (e.g., .env, Netlify env vars).');
     }
 
     supabaseInstance = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
