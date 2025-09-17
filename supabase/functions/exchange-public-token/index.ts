@@ -4,10 +4,16 @@
 // You should persist the access_token securely (e.g., in a table with RLS so only the user can access).
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-// NOTE: To actually persist data, you can import the Supabase client for Edge Functions:
-// import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
-// const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+// Use existing Supabase service role & URL secrets (already configured) – no extra encryption key yet.
+// We temporarily store the raw Plaid access token in access_token_enc column (misnamed) until encryption is added.
+// TODO: Replace with pgcrypto-based encryption (pgp_sym_encrypt) and rename column to access_token_ciphertext.
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+  : null;
 
 interface ExchangeRequest {
   public_token: string;
@@ -142,30 +148,50 @@ serve(async (req) => {
       currency: a.balances.iso_currency_code || 'USD'
     }));
 
-    // ---- Persistence placeholders ----
-    // 1. Store item & encrypted access token (DO NOT store raw token long term).
-    // await supabaseAdmin.from('plaid_items').upsert({
-    //   user_id: userId,
-    //   item_id: exchangeData.item_id,
-    //   access_token_enc: encrypt(exchangeData.access_token)
-    // });
-    // 2. Upsert accounts.
-    // for (const acct of mappedAccounts) {
-    //   await supabaseAdmin.from('accounts').upsert({
-    //     id: acct.plaid_account_id, // or separate surrogate key
-    //     user_id: acct.user_id,
-    //     name: acct.name,
-    //     provider: acct.provider,
-    //     type: acct.type,
-    //     balance: acct.balance
-    //   });
-    // }
+    // ---- Persistence (raw token temporary) ----
+    let persisted = false;
+    if (!supabaseAdmin) {
+      console.warn('Supabase admin client not configured: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY');
+    } else if (!userId) {
+      console.warn('No authenticated user id; skipping persistence');
+    } else {
+      try {
+        // Upsert plaid_items (store token raw for now)
+        const { error: itemErr } = await supabaseAdmin.from('plaid_items').upsert({
+          user_id: userId,
+          item_id: exchangeData.item_id,
+          access_token_enc: exchangeData.access_token
+        });
+        if (itemErr) throw itemErr;
+
+        // Upsert each account into plaid_accounts with raw JSON
+        for (const a of accountsData.accounts) {
+          const mapped = mappedAccounts.find(m => m.plaid_account_id === a.account_id)!;
+          const { error: acctErr } = await supabaseAdmin.from('plaid_accounts').upsert({
+            plaid_account_id: a.account_id,
+            user_id: userId,
+            item_id: exchangeData.item_id,
+            name: mapped.name,
+            provider: mapped.provider,
+            type: mapped.type,
+            balance: mapped.balance,
+            currency: mapped.currency,
+            raw: a
+          });
+          if (acctErr) throw acctErr;
+        }
+        persisted = true;
+      } catch (persistErr) {
+        console.error('Persistence failure (continuing to return accounts):', persistErr);
+      }
+    }
 
     return new Response(JSON.stringify({
       success: true,
       item_id: exchangeData.item_id,
       user_id: userId,
-      accounts: mappedAccounts
+      accounts: mappedAccounts,
+      persisted
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
