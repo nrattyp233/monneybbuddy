@@ -5,13 +5,27 @@
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 
+// NOTE: To actually persist data, you can import the Supabase client for Edge Functions:
+// import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+// const supabaseAdmin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!);
+
 interface ExchangeRequest {
   public_token: string;
 }
 
-interface ExchangeResponse {
-  access_token: string;
-  item_id: string;
+interface ExchangeResponse { access_token: string; item_id: string; }
+
+interface PlaidAccountsGetResponse {
+  accounts: Array<{
+    account_id: string;
+    name: string;
+    official_name?: string;
+    type: string;
+    subtype?: string;
+    balances: { available: number | null; current: number | null; iso_currency_code?: string };
+  }>;
+  item: { item_id: string };
+  request_id: string;
 }
 
 const PLAID_CLIENT_ID = Deno.env.get('PLAID_CLIENT_ID');
@@ -92,13 +106,67 @@ serve(async (req) => {
       });
     }
 
-    const data = await exchangeRes.json() as ExchangeResponse;
+    const exchangeData = await exchangeRes.json() as ExchangeResponse;
 
-    // TODO: Persist data.access_token (and optionally accounts) with userId.
-    // Example (pseudo):
-    // await supabaseAdmin.from('plaid_items').insert({ user_id: userId, item_id: data.item_id, access_token: encryptedToken })
+    // ---- Fetch accounts from Plaid ----
+    const accountsRes = await fetch(`${PLAID_BASE}/accounts/get`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        client_id: PLAID_CLIENT_ID,
+        secret: PLAID_SECRET,
+        access_token: exchangeData.access_token,
+      })
+    });
 
-    return new Response(JSON.stringify({ success: true, item_id: data.item_id, user_id: userId }), {
+    if (!accountsRes.ok) {
+      const aText = await accountsRes.text();
+      console.error('Plaid accounts/get error:', { status: accountsRes.status, body: aText });
+      return new Response(JSON.stringify({ error: 'Failed to fetch accounts', status: accountsRes.status, details: aText }), {
+        status: 500,
+        headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
+      });
+    }
+
+    const accountsData = await accountsRes.json() as PlaidAccountsGetResponse;
+
+    // ---- Map Plaid accounts to internal representation ----
+    const mappedAccounts = accountsData.accounts.map(a => ({
+      // Proposed table columns for a future migration:
+      plaid_account_id: a.account_id,
+      user_id: userId,
+      name: a.official_name || a.name,
+      provider: 'Plaid',
+      type: a.subtype || a.type,
+      balance: a.balances.current,
+      currency: a.balances.iso_currency_code || 'USD'
+    }));
+
+    // ---- Persistence placeholders ----
+    // 1. Store item & encrypted access token (DO NOT store raw token long term).
+    // await supabaseAdmin.from('plaid_items').upsert({
+    //   user_id: userId,
+    //   item_id: exchangeData.item_id,
+    //   access_token_enc: encrypt(exchangeData.access_token)
+    // });
+    // 2. Upsert accounts.
+    // for (const acct of mappedAccounts) {
+    //   await supabaseAdmin.from('accounts').upsert({
+    //     id: acct.plaid_account_id, // or separate surrogate key
+    //     user_id: acct.user_id,
+    //     name: acct.name,
+    //     provider: acct.provider,
+    //     type: acct.type,
+    //     balance: acct.balance
+    //   });
+    // }
+
+    return new Response(JSON.stringify({
+      success: true,
+      item_id: exchangeData.item_id,
+      user_id: userId,
+      accounts: mappedAccounts
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
     });
