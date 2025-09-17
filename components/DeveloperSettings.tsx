@@ -189,8 +189,8 @@ WHERE email = 'lucasnale305@gmail.com';
 -- End of script
 `;
 
-const SUPABASE_URL = "https://thdmywgjbhdtgtqnqizn.supabase.co";
-const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRoZG15d2dqYmhkdGd0cW5xaXpuIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM3MzY5ODYsImV4cCI6MjA2OTMxMjk4Nn0.CLUC8eFtRQBHz6-570NJWZ8QIZs3ty0QGuDmEF5eeFc";
+const SUPABASE_URL = (import.meta as any).env?.VITE_SUPABASE_URL || 'NOT_SET';
+const SUPABASE_ANON_KEY = (import.meta as any).env?.VITE_SUPABASE_ANON_KEY || '';
 
 
 interface DeveloperSettingsProps {
@@ -291,7 +291,7 @@ const DeveloperSettings: React.FC<DeveloperSettingsProps> = ({ currentUserEmail 
                 </p>
                  <div className="space-y-2 p-3 bg-gray-900/50 rounded-lg border border-white/10 text-sm font-mono">
                     <p>SUPABASE_URL: "{SUPABASE_URL}"</p>
-                    <p>SUPABASE_ANON_KEY: "{SUPABASE_ANON_KEY.substring(0, 20)}..."</p>
+                    <p>SUPABASE_ANON_KEY: "{SUPABASE_ANON_KEY ? SUPABASE_ANON_KEY.substring(0, 8) + '…' : 'NOT_SET'}"</p>
                 </div>
                  <p className="text-xs text-gray-400 mt-2">
                     For a production application, you would replace these values with your own Supabase project's credentials.
