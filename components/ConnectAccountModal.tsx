@@ -15,10 +15,12 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
     const [linkToken, setLinkToken] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
+    const [rawError, setRawError] = useState<any>(null);
     
     // Generic error handler for Supabase function calls
     const handleFunctionError = (err: any, context: 'token creation' | 'token exchange') => {
         console.error(`Error during ${context}:`, err);
+        setRawError(err);
         let detailedError = `Could not initialize Plaid connection. Please try again later.`;
         if (err.message) {
             const lowerCaseMessage = err.message.toLowerCase();
@@ -40,6 +42,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         const createLinkToken = async () => {
             setIsLoading(true);
             setError(null);
+            setRawError(null);
             try {
                 const supabase = getSupabase();
                 const { data, error: funcError } = await supabase.functions.invoke('create-link-token');
@@ -91,6 +94,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
             setLinkToken(null);
             setIsLoading(true);
             setError(null);
+            setRawError(null);
         }
     }, [isOpen]);
     
@@ -100,12 +104,39 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         <Modal isOpen={isOpen} onClose={onClose} title="Connect Bank Account">
             <div className="space-y-4 text-center">
                 
-                {error && (
-                    <div className="p-3 bg-red-900/50 border border-red-500/50 rounded-md flex items-start space-x-3 text-sm text-red-300 text-left">
-                        <AlertTriangleIcon className="w-8 h-8 flex-shrink-0 mt-0.5"/>
-                        <span>{error}</span>
-                    </div>
-                )}
+                                {error && (
+                                        <div className="p-3 bg-red-900/50 border border-red-500/50 rounded-md flex flex-col space-y-2 text-sm text-left">
+                                                <div className="flex items-start space-x-3 text-red-300">
+                                                        <AlertTriangleIcon className="w-8 h-8 flex-shrink-0 mt-0.5"/>
+                                                        <span className="text-red-200 whitespace-pre-wrap">{error}</span>
+                                                </div>
+                                                {rawError && (
+                                                    <details className="bg-black/20 rounded p-2 text-xs text-red-400 whitespace-pre-wrap">
+                                                        <summary className="cursor-pointer text-red-300">Raw error details</summary>
+                                                        {typeof rawError === 'string' ? rawError : JSON.stringify(rawError, null, 2)}
+                                                    </details>
+                                                )}
+                                                <div className="flex justify-end pt-1">
+                                                    <button
+                                                        onClick={() => {
+                                                            setError(null); setRawError(null); setIsLoading(true); setLinkToken(null);
+                                                            // retry fetching link token
+                                                            const supabase = getSupabase();
+                                                            supabase.functions.invoke('create-link-token')
+                                                                .then(({ data, error: funcError }) => {
+                                                                    if (funcError || !data?.link_token) {
+                                                                        handleFunctionError(funcError || new Error('Failed to retrieve a link token on retry'), 'token creation');
+                                                                    } else {
+                                                                        setLinkToken(data.link_token);
+                                                                    }
+                                                                })
+                                                                .finally(() => setIsLoading(false));
+                                                        }}
+                                                        className="px-3 py-1 text-xs rounded bg-red-700 hover:bg-red-600 text-white"
+                                                    >Retry</button>
+                                                </div>
+                                        </div>
+                                )}
 
                 <div className="pt-4">
                     <button 
