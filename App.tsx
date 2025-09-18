@@ -70,16 +70,28 @@ const App: React.FC = () => {
         const supabase = getSupabase();
 
         try {
+            console.log('Fetching data for user:', user.id); // Debug logging
+            
             const [accountsRes, transactionsRes, savingsRes] = await Promise.all([
                 supabase.from('accounts').select('*').eq('user_id', user.id),
                 supabase.from('transactions').select('*').or(`from_details.eq.${user.email},to_details.eq.${user.email}`).order('created_at', { ascending: false }),
                 supabase.from('locked_savings').select('*').eq('user_id', user.id)
             ]);
 
-            if (accountsRes.error) throw accountsRes.error;
-            if (transactionsRes.error) throw transactionsRes.error;
-            if (savingsRes.error) throw savingsRes.error;
+            if (accountsRes.error) {
+                console.error('Accounts fetch error:', accountsRes.error);
+                throw accountsRes.error;
+            }
+            if (transactionsRes.error) {
+                console.error('Transactions fetch error:', transactionsRes.error);
+                throw transactionsRes.error;
+            }
+            if (savingsRes.error) {
+                console.error('Savings fetch error:', savingsRes.error);
+                throw savingsRes.error;
+            }
 
+            console.log('Fetched accounts:', accountsRes.data); // Debug logging
             setAccounts(accountsRes.data as Account[]);
             
             const formattedTransactions = transactionsRes.data.map(tx => ({
@@ -345,6 +357,8 @@ const App: React.FC = () => {
     };
 
     const handleConnectionSuccess = async (instantAccounts?: { name: string; balance: number | null; provider: string; type?: string }[]) => {
+        console.log('Connection success with accounts:', instantAccounts); // Debug logging
+        
         if (instantAccounts && instantAccounts.length) {
             // Optimistically merge (avoid duplicates by name)
             setAccounts(prev => {
@@ -358,10 +372,19 @@ const App: React.FC = () => {
                     type: a.type || '',
                     balance: a.balance,
                   }));
+                console.log('Adding new accounts:', additions); // Debug logging
                 return [...prev, ...additions];
             });
         }
-        await fetchData();
+        
+        // Always fetch fresh data from the server after connection
+        try {
+            await fetchData();
+            console.log('Data fetched successfully after Plaid connection');
+        } catch (error) {
+            console.error('Error fetching data after Plaid connection:', error);
+        }
+        
         setIsConnectAccountModalOpen(false);
     };
 

@@ -28,6 +28,10 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 detailedError = "Network Error: This is often due to a CORS policy on the server. Please ensure your Supabase Edge Function is configured with the correct CORS headers to accept requests from this app's domain.";
             } else if (lowerCaseMessage.includes('edge function')) {
                 detailedError = "Server Error: The application's backend (a Supabase Edge Function) failed to process the request. This is often caused by missing API keys (like Plaid credentials) in the server's configuration. Please check the setup guide in your profile settings for more information.";
+            } else if (lowerCaseMessage.includes('429') || lowerCaseMessage.includes('too many requests')) {
+                detailedError = "Rate Limit Error: Too many requests have been made to Plaid. Please wait a few minutes and try again.";
+            } else if (lowerCaseMessage.includes('seon') || lowerCaseMessage.includes('geolocation')) {
+                detailedError = "Configuration Error: There's an issue with the Plaid Link configuration. This is usually related to security features and should resolve itself. Please try again.";
             } else {
                 detailedError = `An unexpected error occurred: ${err.message}`;
             }
@@ -72,6 +76,8 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
 
             if (funcError) throw funcError;
 
+            console.log('Plaid exchange response:', data); // Debug logging
+            
             // If backend persistence failed, fall back to inserting accounts client-side.
             if (data && data.accounts && Array.isArray(data.accounts) && data.persisted === false) {
                 for (const acct of data.accounts) {
@@ -99,7 +105,15 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 }
             }
 
-            onConnectionSuccess(data?.accounts?.map((a:any) => ({ name: a.name, balance: a.balance, provider: a.provider || 'Plaid', type: a.type })));
+            const mappedAccounts = data?.accounts?.map((a:any) => ({ 
+                name: a.name, 
+                balance: a.balance, 
+                provider: a.provider || 'Plaid', 
+                type: a.type 
+            }));
+            
+            console.log('Calling onConnectionSuccess with mapped accounts:', mappedAccounts);
+            onConnectionSuccess(mappedAccounts);
             onClose();
 
         } catch (err: any) {
@@ -111,6 +125,14 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
     const { open, ready } = usePlaidLink({
         token: linkToken,
         onSuccess,
+        onExit: (err, metadata) => {
+            if (err != null) {
+                console.log('Plaid Link exited with error:', err);
+            }
+        },
+        onEvent: (eventName, metadata) => {
+            console.log('Plaid Link event:', eventName, metadata);
+        },
     });
 
     // Reset state when modal is closed

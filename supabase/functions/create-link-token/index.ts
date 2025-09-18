@@ -103,7 +103,7 @@ serve(async (req) => {
       language: 'en',
       country_codes: ['US'],
       user: { client_user_id: clientUserId },
-      products: ['auth', 'transactions']
+      products: ['auth', 'transactions', 'accounts']
     };
 
     const plaidRes = await fetch(`${PLAID_BASE}/link/token/create`, {

@@ -165,6 +165,8 @@ serve(async (req) => {
       console.warn('No authenticated user id; skipping persistence');
     } else {
       try {
+        console.log(`Persisting ${mappedAccounts.length} accounts for user ${userId}`); // Debug logging
+        
         // Upsert plaid_items (store token raw for now)
         let itemStored = false;
         const { error: itemErr } = await supabaseAdmin.from('plaid_items').upsert({
@@ -182,11 +184,14 @@ serve(async (req) => {
           }
         } else {
           itemStored = true;
+          console.log('Successfully stored plaid_items record');
         }
 
         // Upsert each account into plaid_accounts with raw JSON and ensure an accounts row exists (generating UUID if needed)
         for (const a of accountsData.accounts) {
           const mapped = mappedAccounts.find(m => m.plaid_account_id === a.account_id)!;
+          console.log(`Processing account: ${mapped.name} with balance: ${mapped.balance}`); // Debug logging
+          
           const { error: acctErr } = await supabaseAdmin.from('plaid_accounts').upsert({
             plaid_account_id: a.account_id,
             user_id: userId,
@@ -198,7 +203,10 @@ serve(async (req) => {
             currency: mapped.currency,
             raw: a
           });
-          if (acctErr) throw acctErr;
+          if (acctErr) {
+            console.error(`Error upserting plaid_account ${mapped.name}:`, acctErr);
+            throw acctErr;
+          }
 
           // Find existing by plaid_account_id mapping stored in plaid_accounts then join to accounts by (user_id,name,provider,type)
           const { data: existingAccounts, error: listErr } = await supabaseAdmin
@@ -206,9 +214,13 @@ serve(async (req) => {
             .select('id,name')
             .eq('user_id', userId)
             .eq('name', mapped.name);
-          if (listErr) throw listErr;
+          if (listErr) {
+            console.error(`Error finding existing account ${mapped.name}:`, listErr);
+            throw listErr;
+          }
 
           if (!existingAccounts || existingAccounts.length === 0) {
+            console.log(`Creating new account record for: ${mapped.name}`);
             const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
               user_id: userId,
               name: mapped.name,
@@ -216,14 +228,25 @@ serve(async (req) => {
               type: mapped.type,
               balance: mapped.balance
             });
-            if (insertMirrorErr) throw insertMirrorErr;
+            if (insertMirrorErr) {
+              console.error(`Error inserting new account ${mapped.name}:`, insertMirrorErr);
+              throw insertMirrorErr;
+            }
           } else {
+            console.log(`Updating existing account record for: ${mapped.name} with balance: ${mapped.balance}`);
             const existing = existingAccounts[0];
             const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
-              .update({ balance: mapped.balance })
+              .update({ 
+                balance: mapped.balance,
+                provider: mapped.provider,
+                type: mapped.type
+              })
               .eq('id', existing.id)
               .eq('user_id', userId);
-            if (updateMirrorErr) throw updateMirrorErr;
+            if (updateMirrorErr) {
+              console.error(`Error updating account ${mapped.name}:`, updateMirrorErr);
+              throw updateMirrorErr;
+            }
           }
         }
   persisted = true; // We consider success if accounts loop ran
