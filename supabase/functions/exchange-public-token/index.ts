@@ -164,7 +164,7 @@ serve(async (req) => {
         });
         if (itemErr) throw itemErr;
 
-        // Upsert each account into plaid_accounts with raw JSON
+        // Upsert each account into plaid_accounts with raw JSON and then ensure a row exists in public.accounts
         for (const a of accountsData.accounts) {
           const mapped = mappedAccounts.find(m => m.plaid_account_id === a.account_id)!;
           const { error: acctErr } = await supabaseAdmin.from('plaid_accounts').upsert({
@@ -179,6 +179,34 @@ serve(async (req) => {
             raw: a
           });
           if (acctErr) throw acctErr;
+
+          // Mirror into accounts table if not present (id uses plaid_account_id to stay stable)
+          const { data: existingAccount, error: existingErr } = await supabaseAdmin
+            .from('accounts')
+            .select('id')
+            .eq('id', a.account_id)
+            .eq('user_id', userId)
+            .maybeSingle();
+          if (existingErr) throw existingErr;
+
+            if (!existingAccount) {
+              const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
+                id: a.account_id,
+                user_id: userId,
+                name: mapped.name,
+                provider: mapped.provider,
+                type: mapped.type,
+                balance: mapped.balance
+              });
+              if (insertMirrorErr) throw insertMirrorErr;
+            } else {
+              // Update balance & name if changed
+              const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
+                .update({ name: mapped.name, balance: mapped.balance, type: mapped.type, provider: mapped.provider })
+                .eq('id', a.account_id)
+                .eq('user_id', userId);
+              if (updateMirrorErr) throw updateMirrorErr;
+            }
         }
         persisted = true;
       } catch (persistErr) {
