@@ -344,8 +344,23 @@ const App: React.FC = () => {
         }
     };
 
-    const handleConnectionSuccess = async () => {
-        // The backend function handled creating accounts, we just need to refresh
+    const handleConnectionSuccess = async (instantAccounts?: { name: string; balance: number | null; provider: string; type?: string }[]) => {
+        if (instantAccounts && instantAccounts.length) {
+            // Optimistically merge (avoid duplicates by name)
+            setAccounts(prev => {
+                const names = new Set(prev.map(p => p.name));
+                const additions = instantAccounts
+                  .filter(a => !names.has(a.name))
+                  .map(a => ({
+                    id: crypto.randomUUID(),
+                    name: a.name,
+                    provider: a.provider,
+                    type: a.type || '',
+                    balance: a.balance,
+                  }));
+                return [...prev, ...additions];
+            });
+        }
         await fetchData();
         setIsConnectAccountModalOpen(false);
     };

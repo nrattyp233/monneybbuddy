@@ -37,7 +37,8 @@ interface PlaidAccountsGetResponse {
 const PLAID_CLIENT_ID = Deno.env.get('PLAID_CLIENT_ID');
 const PLAID_SECRET = Deno.env.get('PLAID_SECRET');
 const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'sandbox';
-const ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
+const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
+const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' ? RAW_ALLOWED_ORIGIN.slice(0, -1) : RAW_ALLOWED_ORIGIN;
 
 const PLAID_BASE = {
   sandbox: 'https://sandbox.plaid.com',
@@ -45,23 +46,31 @@ const PLAID_BASE = {
   production: 'https://production.plaid.com'
 }[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://sandbox.plaid.com';
 
-function corsHeaders(origin: string) {
+function buildCors(originHeader: string | null) {
+  let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;
+  if (NORMALIZED_ALLOWED_ORIGIN !== '*' && originHeader) {
+    const normalizedIncoming = originHeader.endsWith('/') ? originHeader.slice(0, -1) : originHeader;
+    if (normalizedIncoming === NORMALIZED_ALLOWED_ORIGIN) {
+      allowOrigin = normalizedIncoming;
+    }
+  }
   return {
-    'Access-Control-Allow-Origin': origin,
+    'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
     'Access-Control-Allow-Methods': 'POST,OPTIONS'
   };
 }
 
 serve(async (req) => {
+  const originHeader = req.headers.get('origin');
   if (req.method === 'OPTIONS') {
-    return new Response('ok', { headers: corsHeaders(ALLOWED_ORIGIN) });
+    return new Response('ok', { headers: buildCors(originHeader) });
   }
 
   if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
     return new Response(JSON.stringify({ error: 'Plaid credentials not configured on server.' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
+      headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
 
@@ -89,7 +98,7 @@ serve(async (req) => {
     if (!body.public_token) {
       return new Response(JSON.stringify({ error: 'public_token missing' }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
+        headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
 
@@ -108,7 +117,7 @@ serve(async (req) => {
       console.error('Plaid exchange error:', { status: exchangeRes.status, body: text });
       return new Response(JSON.stringify({ error: 'Failed to exchange public token', status: exchangeRes.status, details: text }), {
         status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
+        headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
 
@@ -130,7 +139,7 @@ serve(async (req) => {
       console.error('Plaid accounts/get error:', { status: accountsRes.status, body: aText });
       return new Response(JSON.stringify({ error: 'Failed to fetch accounts', status: accountsRes.status, details: aText }), {
         status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
+        headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
 
@@ -222,13 +231,13 @@ serve(async (req) => {
       persisted
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
+      headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   } catch (e) {
     console.error('Unhandled error exchanging public token:', e);
     return new Response(JSON.stringify({ error: 'Server exception exchanging public token', details: String(e) }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', ...corsHeaders(ALLOWED_ORIGIN) }
+      headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
 });

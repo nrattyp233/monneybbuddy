@@ -8,7 +8,7 @@ import { getSupabase } from '../services/supabase';
 interface ConnectAccountModalProps {
     isOpen: boolean;
     onClose: () => void;
-    onConnectionSuccess: () => void; // Callback to refresh data in parent
+    onConnectionSuccess: (instantAccounts?: { name: string; balance: number | null; provider: string; type?: string }[]) => void; // optional immediate accounts
 }
 
 const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClose, onConnectionSuccess }) => {
@@ -66,15 +66,40 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         setError(null);
         try {
             const supabase = getSupabase();
-            const { error: funcError } = await supabase.functions.invoke('exchange-public-token', {
+            const { data, error: funcError } = await supabase.functions.invoke('exchange-public-token', {
                 body: { public_token },
             });
 
             if (funcError) throw funcError;
-            
-            // Success! The backend function has stored the accounts.
-            // Tell the parent component to refresh its data.
-            onConnectionSuccess();
+
+            // If backend persistence failed, fall back to inserting accounts client-side.
+            if (data && data.accounts && Array.isArray(data.accounts) && data.persisted === false) {
+                for (const acct of data.accounts) {
+                    // Try to find existing by name
+                    const { data: existing, error: selErr } = await supabase
+                      .from('accounts')
+                      .select('id')
+                      .eq('name', acct.name)
+                      .eq('user_id', data.user_id)
+                      .maybeSingle();
+                    if (selErr) continue;
+                    if (!existing) {
+                        await supabase.from('accounts').insert({
+                            name: acct.name,
+                            provider: acct.provider || 'Plaid',
+                            type: acct.type,
+                            balance: acct.balance,
+                            user_id: data.user_id
+                        });
+                    } else {
+                        await supabase.from('accounts')
+                          .update({ balance: acct.balance, type: acct.type, provider: acct.provider || 'Plaid' })
+                          .eq('id', existing.id);
+                    }
+                }
+            }
+
+            onConnectionSuccess(data?.accounts?.map((a:any) => ({ name: a.name, balance: a.balance, provider: a.provider || 'Plaid', type: a.type })));
             onClose();
 
         } catch (err: any) {
