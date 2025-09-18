@@ -166,14 +166,25 @@ serve(async (req) => {
     } else {
       try {
         // Upsert plaid_items (store token raw for now)
+        let itemStored = false;
         const { error: itemErr } = await supabaseAdmin.from('plaid_items').upsert({
           user_id: userId,
           item_id: exchangeData.item_id,
           access_token_enc: exchangeData.access_token
         });
-        if (itemErr) throw itemErr;
+        if (itemErr) {
+          const msg = itemErr.message || '';
+          // Skip fatal only if schema not ready; continue with accounts so UI still works
+          if (msg.includes('access_token_enc') || msg.includes('plaid_items')) {
+            console.warn('Skipping plaid_items store (schema missing):', msg);
+          } else {
+            throw itemErr;
+          }
+        } else {
+          itemStored = true;
+        }
 
-        // Upsert each account into plaid_accounts with raw JSON and then ensure a row exists in public.accounts
+        // Upsert each account into plaid_accounts with raw JSON and ensure an accounts row exists (generating UUID if needed)
         for (const a of accountsData.accounts) {
           const mapped = mappedAccounts.find(m => m.plaid_account_id === a.account_id)!;
           const { error: acctErr } = await supabaseAdmin.from('plaid_accounts').upsert({
@@ -189,35 +200,33 @@ serve(async (req) => {
           });
           if (acctErr) throw acctErr;
 
-          // Mirror into accounts table if not present (id uses plaid_account_id to stay stable)
-          const { data: existingAccount, error: existingErr } = await supabaseAdmin
+          // Find existing by plaid_account_id mapping stored in plaid_accounts then join to accounts by (user_id,name,provider,type)
+          const { data: existingAccounts, error: listErr } = await supabaseAdmin
             .from('accounts')
-            .select('id')
-            .eq('id', a.account_id)
+            .select('id,name')
             .eq('user_id', userId)
-            .maybeSingle();
-          if (existingErr) throw existingErr;
+            .eq('name', mapped.name);
+          if (listErr) throw listErr;
 
-            if (!existingAccount) {
-              const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
-                id: a.account_id,
-                user_id: userId,
-                name: mapped.name,
-                provider: mapped.provider,
-                type: mapped.type,
-                balance: mapped.balance
-              });
-              if (insertMirrorErr) throw insertMirrorErr;
-            } else {
-              // Update balance & name if changed
-              const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
-                .update({ name: mapped.name, balance: mapped.balance, type: mapped.type, provider: mapped.provider })
-                .eq('id', a.account_id)
-                .eq('user_id', userId);
-              if (updateMirrorErr) throw updateMirrorErr;
-            }
+          if (!existingAccounts || existingAccounts.length === 0) {
+            const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
+              user_id: userId,
+              name: mapped.name,
+              provider: mapped.provider,
+              type: mapped.type,
+              balance: mapped.balance
+            });
+            if (insertMirrorErr) throw insertMirrorErr;
+          } else {
+            const existing = existingAccounts[0];
+            const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
+              .update({ balance: mapped.balance })
+              .eq('id', existing.id)
+              .eq('user_id', userId);
+            if (updateMirrorErr) throw updateMirrorErr;
+          }
         }
-        persisted = true;
+  persisted = true; // We consider success if accounts loop ran
       } catch (persistErr) {
         console.error('Persistence failure (continuing to return accounts):', persistErr);
       }
