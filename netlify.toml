@@ -7,24 +7,6 @@
   [build.environment]
     SECRETS_SCAN_OMIT_KEYS = "VITE_SUPABASE_URL,VITE_SUPABASE_ANON_KEY"
 
-[build.processing]
-  skip_processing = false
-  
-[build.processing.html]
-  pretty_urls = true
-  
-[build.processing.js]
-  bundle = false
-  minify = false
-  
-[build.processing.css]
-  bundle = false
-  minify = false
-
-# Post-deploy script to repair Plaid accounts
-[context.production.post]
-  command = "node scripts/repair-plaid-accounts.js"
-
 # Single Page App fallback
 [[redirects]]
   from = "/*"
