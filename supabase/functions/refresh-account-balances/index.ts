@@ -58,15 +58,25 @@ serve(async (req) => {
   }
 
   if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
-    return new Response(JSON.stringify({ error: 'Plaid credentials not configured on server.' }), {
-      status: 500,
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Plaid credentials not configured on server.',
+      needsServerConfig: true,
+      guidance: 'Add PLAID_CLIENT_ID and PLAID_SECRET to your Supabase project secrets.'
+    }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
 
   if (!supabaseAdmin) {
-    return new Response(JSON.stringify({ error: 'Supabase admin client not configured' }), {
-      status: 500,
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Supabase admin client not configured',
+      needsServerConfig: true,
+      guidance: 'Add SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY as function secrets.'
+    }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
@@ -92,8 +102,13 @@ serve(async (req) => {
     }
 
     if (!userId) {
-      return new Response(JSON.stringify({ error: 'User not authenticated' }), {
-        status: 401,
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'User not authenticated',
+        needsAuth: true,
+        guidance: 'Ensure the request includes a valid Supabase user session (Bearer token).'
+      }), {
+        status: 200,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
@@ -249,7 +264,7 @@ serve(async (req) => {
       error: 'Server exception refreshing account balances', 
       details: String(error) 
     }), {
-      status: 500,
+      status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
