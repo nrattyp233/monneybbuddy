@@ -31,7 +31,7 @@ function buildCors(originHeader: string | null) {
   }
   return {
     'Access-Control-Allow-Origin': allowOrigin,
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-admin-token',
     'Access-Control-Allow-Methods': 'POST,OPTIONS'
   };
 }
@@ -56,9 +56,14 @@ serve(async (req) => {
     });
   }
 
-  // Get auth token from request
+  // Admin override header for global repair
+  const adminHeader = req.headers.get('x-admin-token');
+  const adminSecret = Deno.env.get('REPAIR_ADMIN_TOKEN');
+  const isAdmin = Boolean(adminHeader && adminSecret && adminHeader === adminSecret);
+
+  // Get auth token from request if not admin
   const authHeader = req.headers.get('authorization');
-  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+  if (!isAdmin && (!authHeader || !authHeader.startsWith('Bearer '))) {
     return new Response(JSON.stringify({ error: 'Missing or invalid authorization' }), {
       status: 401,
       headers: { 'Content-Type': 'application/json', ...corsHeaders },
@@ -66,18 +71,74 @@ serve(async (req) => {
   }
 
   try {
-    // Extract user ID from auth token
+    // If admin, perform global repair; otherwise, repair for current user
+    if (isAdmin) {
+      const { data: accounts, error: accountsError } = await supabaseAdmin
+        .from('accounts')
+        .select('id, name, provider, account_status')
+        .eq('provider', 'Plaid');
+
+      if (accountsError) {
+        return new Response(JSON.stringify({ 
+          error: 'Failed to get accounts',
+          details: accountsError.message
+        }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
+
+      const accountsToFix = accounts.filter(acc => acc.account_status !== 'active');
+
+      if (accountsToFix.length === 0) {
+        return new Response(JSON.stringify({ 
+          success: true,
+          message: 'No accounts need repair',
+          accountsExamined: accounts.length,
+          accountsFixed: 0
+        }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
+
+      const { error: updateError } = await supabaseAdmin
+        .from('accounts')
+        .update({ account_status: 'active' })
+        .in('id', accountsToFix.map(acc => acc.id));
+
+      if (updateError) {
+        return new Response(JSON.stringify({ 
+          error: 'Failed to update accounts',
+          details: updateError.message
+        }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
+
+      return new Response(JSON.stringify({
+        success: true,
+        message: `Successfully repaired ${accountsToFix.length} accounts`,
+        accountsExamined: accounts.length,
+        accountsFixed: accountsToFix.length,
+        fixedAccounts: accountsToFix.map(acc => acc.name)
+      }), {
+        status: 200, 
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
+      });
+    }
+
+    // Extract user ID from auth token (non-admin path)
     let userId = null;
-    const token = authHeader.replace('Bearer ', '');
+    const token = (authHeader || '').replace('Bearer ', '');
     const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
-    
     if (userError || !user) {
       return new Response(JSON.stringify({ error: 'Authentication failed', details: userError?.message }), {
         status: 401, 
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
       });
     }
-    
     userId = user.id;
     
     // Get all Plaid accounts for this user
@@ -96,12 +157,12 @@ serve(async (req) => {
       });
     }
 
-    // Find all accounts that have an external_id (connected to Plaid) and update their status
+    // Find all Plaid accounts for this user and update their status
     const { data: accounts, error: accountsError } = await supabaseAdmin
       .from('accounts')
-      .select('id, name, external_id, provider, account_status')
+      .select('id, name, provider, account_status')
       .eq('user_id', userId)
-      .not('external_id', 'is', null);
+      .eq('provider', 'Plaid');
 
     if (accountsError) {
       return new Response(JSON.stringify({ 
@@ -114,9 +175,7 @@ serve(async (req) => {
     }
     
     // Update all accounts that need repair (not already active)
-    const accountsToFix = accounts.filter(acc => 
-      acc.provider === 'Plaid' && acc.account_status !== 'active'
-    );
+    const accountsToFix = accounts.filter(acc => acc.account_status !== 'active');
     
     if (accountsToFix.length === 0) {
       return new Response(JSON.stringify({ 
