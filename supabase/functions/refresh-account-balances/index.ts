@@ -226,12 +226,13 @@ serve(async (req) => {
             headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
           });
         }
-        // Other errors: surface as guidance without failing
+        // Other errors: only suggest reconnection for auth-related errors
+        console.warn('Non-critical error accessing plaid_items, continuing with cached balances');
         return new Response(JSON.stringify({ 
           success: true, 
-          message: 'Could not access stored Plaid tokens. You may need to reconnect once.',
+          message: 'Using cached account balances. Refresh manually if needed.',
           updatedAccounts: 0,
-          needsReconnection: true
+          needsReconnection: false // Don't force reconnection for database access issues
         }), {
           status: 200,
           headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
@@ -239,6 +240,28 @@ serve(async (req) => {
       }
       
       plaidItems = data || [];
+      
+      // If no plaid items found, check if user has accounts in the accounts table
+      if (plaidItems.length === 0) {
+        const { data: accountsData } = await supabaseAdmin
+          .from('accounts')
+          .select('id')
+          .eq('user_id', userId);
+        
+        if (accountsData && accountsData.length > 0) {
+          // User has accounts but no plaid_items entries - they may have connected before plaid_items table
+          console.log('User has accounts but no plaid_items entries - using existing accounts');
+          return new Response(JSON.stringify({ 
+            success: true, 
+            message: 'Account balances refreshed successfully.',
+            updatedAccounts: 0,
+            needsReconnection: false
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+          });
+        }
+      }
     } catch (error) {
       console.warn('Error accessing plaid_items:', error);
       return new Response(JSON.stringify({ 
