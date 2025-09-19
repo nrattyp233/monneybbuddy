@@ -124,6 +124,32 @@ const App: React.FC = () => {
         fetchData();
     }, [user, fetchData]);
 
+    // Live updates: subscribe to accounts changes for this user
+    useEffect(() => {
+        if (!user) return;
+        const supabase = getSupabase();
+        const channel = supabase
+            .channel(`accounts-realtime-${user.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'accounts',
+                filter: `user_id=eq.${user.id}`,
+            }, (payload) => {
+                // Update local state with minimal fetch to keep UI in sync
+                fetchData();
+            })
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    console.log('✅ Subscribed to account balance updates');
+                }
+            });
+
+        return () => {
+            try { supabase.removeChannel(channel); } catch {}
+        };
+    }, [user, fetchData]);
+
     // Auto-refresh balances every 5 minutes when user is active
     useEffect(() => {
         if (!user) return;

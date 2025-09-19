@@ -184,8 +184,8 @@ serve(async (req) => {
       try {
         console.log(`🏦 Fetching accounts for item: ${item.item_id}`);
         
-        // Get current balances from Plaid
-        const accountsRes = await fetch(`${PLAID_BASE}/accounts/get`, {
+        // Get current balances from Plaid (balances/get is lighter than accounts/get)
+        const accountsRes = await fetch(`${PLAID_BASE}/accounts/balance/get`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -197,8 +197,24 @@ serve(async (req) => {
 
         if (!accountsRes.ok) {
           const errorText = await accountsRes.text();
-          console.error(`Plaid accounts/get error for item ${item.item_id}:`, { status: accountsRes.status, body: errorText });
-          errors.push(`Failed to fetch accounts for item ${item.item_id}: ${errorText}`);
+          console.error(`Plaid balances/get error for item ${item.item_id}:`, { status: accountsRes.status, body: errorText });
+          // If Plaid indicates invalid/expired access_token or consent, mark reconnection once
+          try {
+            const errJson = JSON.parse(errorText);
+            const code = errJson?.error_code || '';
+            if (['INVALID_ACCESS_TOKEN', 'ITEM_LOGIN_REQUIRED', 'INVALID_ITEM', 'PRODUCT_NOT_READY', 'INSUFFICIENT_PERMISSIONS'].includes(code)) {
+              return new Response(JSON.stringify({
+                success: true,
+                message: 'Your bank connection needs re-authorization with Plaid to continue refreshing balances.',
+                updatedAccounts: totalUpdated,
+                needsReconnection: true
+              }), {
+                status: 200,
+                headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+              });
+            }
+          } catch {}
+          errors.push(`Failed to fetch balances for item ${item.item_id}: ${errorText}`);
           continue;
         }
 
