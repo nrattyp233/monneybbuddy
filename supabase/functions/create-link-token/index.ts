@@ -108,8 +108,10 @@ serve(async (req) => {
       language: 'en',
       country_codes: ['US'],
       user: { client_user_id: clientUserId },
-      products: ['auth', 'transactions', 'accounts']
+      products: ['auth', 'transactions']  // Reduced products for production compatibility
     };
+
+    console.log(`🔄 Creating Plaid link token for user ${clientUserId} in ${PLAID_ENV} environment`);
 
     const plaidRes = await fetch(`${PLAID_BASE}/link/token/create`, {
       method: 'POST',
@@ -119,17 +121,55 @@ serve(async (req) => {
 
     if (!plaidRes.ok) {
       const text = await plaidRes.text();
-      console.error('Plaid link/token error:', { status: plaidRes.status, body: text });
+      console.error('❌ Plaid link/token error:', { 
+        status: plaidRes.status, 
+        statusText: plaidRes.statusText,
+        body: text,
+        environment: PLAID_ENV,
+        endpoint: `${PLAID_BASE}/link/token/create`
+      });
+      
+      let guidance = 'Check server configuration and Plaid credentials.';
+      
+      try {
+        const errJson = JSON.parse(text);
+        if (errJson.error_code) {
+          console.error(`🔍 Plaid error details:`, errJson);
+          
+          switch (errJson.error_code) {
+            case 'INVALID_CLIENT_ID':
+              guidance = 'PLAID_CLIENT_ID is invalid or not set correctly.';
+              break;
+            case 'INVALID_SECRET':
+              guidance = 'PLAID_SECRET is invalid or not set correctly.';
+              break;
+            case 'INVALID_PRODUCT':
+              guidance = 'One or more requested products are not enabled for this client.';
+              break;
+            case 'ITEM_NOT_SUPPORTED':
+              guidance = 'This environment or client configuration is not supported.';
+              break;
+            default:
+              guidance = `Plaid error: ${errJson.error_message || errJson.error_code}`;
+          }
+        }
+      } catch {
+        // Failed to parse error, use generic guidance
+      }
+      
       const payload: Record<string, unknown> = {
         success: false,
-        error: 'Failed to create link token',
+        error: 'Failed to create Plaid link token',
         plaidStatus: plaidRes.status,
-        details: text
+        plaidEnvironment: PLAID_ENV,
+        details: text,
+        guidance
       };
+      
       if (plaidRes.status === 400 || plaidRes.status === 401 || plaidRes.status === 403) {
         payload.needsServerConfig = true;
-        payload.guidance = 'Verify PLAID_CLIENT_ID/PLAID_SECRET and allowed products/env. Check ALLOWED_ORIGIN for CORS.';
       }
+      
       return new Response(JSON.stringify(payload), {
         status: 200,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
@@ -137,16 +177,37 @@ serve(async (req) => {
     }
 
     const data = await plaidRes.json() as PlaidLinkTokenCreateResponse;
-    return new Response(JSON.stringify({ link_token: data.link_token, expiration: data.expiration }), {
+    
+    console.log(`✅ Successfully created Plaid link token in ${PLAID_ENV} environment`);
+    
+    return new Response(JSON.stringify({ 
+      link_token: data.link_token, 
+      expiration: data.expiration,
+      environment: PLAID_ENV 
+    }), {
       status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   } catch (e) {
-    console.error('Unhandled error creating link token:', e);
+    console.error('❌ Unhandled error creating link token:', e);
+    
+    // Enhanced error details for debugging
+    const errorDetails = {
+      message: e instanceof Error ? e.message : String(e),
+      stack: e instanceof Error ? e.stack : undefined,
+      plaidEnvironment: PLAID_ENV,
+      plaidBase: PLAID_BASE,
+      timestamp: new Date().toISOString()
+    };
+    
+    console.error('🔍 Error details:', errorDetails);
+    
     return new Response(JSON.stringify({ 
       success: false,
       error: 'Server exception creating link token', 
-      details: String(e) 
+      details: errorDetails.message,
+      canRetry: true,
+      guidance: 'Please try again. If the issue persists, check server configuration.'
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
