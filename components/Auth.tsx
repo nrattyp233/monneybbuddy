@@ -40,7 +40,7 @@ const Auth: React.FC = () => {
         if (error) {
             handleAuthError(error);
         } else if (data.user) {
-            setSuccessMessage("Success! To complete setup, please click the confirmation link sent to your email. (Note: In this demo, you may be able to log in directly if emails are disabled).");
+            setSuccessMessage("Success! To complete setup, please click the confirmation link sent to your email.");
         }
     };
 

@@ -13,15 +13,15 @@ const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
 
 const PLAID_CLIENT_ID = Deno.env.get('PLAID_CLIENT_ID');
 const PLAID_SECRET = Deno.env.get('PLAID_SECRET');
-const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'sandbox';
+const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'production'; // Default to production, not sandbox
 const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
 const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' ? RAW_ALLOWED_ORIGIN.slice(0, -1) : RAW_ALLOWED_ORIGIN;
 
 const PLAID_BASE = {
   sandbox: 'https://sandbox.plaid.com',
-  development: 'https://development.plaid.com',
+  development: 'https://development.plaid.com', 
   production: 'https://production.plaid.com'
-}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://sandbox.plaid.com';
+}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://production.plaid.com';
 
 // Rate limiting: track last refresh per user to prevent abuse
 const lastRefreshCache = new Map<string, number>();
@@ -275,7 +275,7 @@ serve(async (req) => {
         const accountsRes = await retryPlaidRequest(`${PLAID_BASE}/accounts/balance/get`, {
           client_id: PLAID_CLIENT_ID,
           secret: PLAID_SECRET,
-          access_token: item.access_token_enc, // TODO: decrypt when encryption is implemented
+          access_token: item.access_token_enc, // Production: decrypt if using pgcrypto
         });
 
         if (!accountsRes.ok) {

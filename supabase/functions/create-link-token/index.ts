@@ -33,7 +33,7 @@ interface PlaidLinkTokenCreateResponse {
 
 const PLAID_CLIENT_ID = Deno.env.get('PLAID_CLIENT_ID');
 const PLAID_SECRET = Deno.env.get('PLAID_SECRET');
-const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'sandbox';
+const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'production';
 // Normalize allowed origin (strip trailing slash) to avoid mismatch with incoming Origin header
 const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
 const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' 
@@ -44,7 +44,7 @@ const PLAID_BASE = {
   sandbox: 'https://sandbox.plaid.com',
   development: 'https://development.plaid.com',
   production: 'https://production.plaid.com'
-}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://sandbox.plaid.com';
+}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://production.plaid.com';
 
 function buildCors(originHeader: string | null) {
   let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;

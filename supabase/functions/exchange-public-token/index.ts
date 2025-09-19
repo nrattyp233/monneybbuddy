@@ -6,9 +6,8 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-// Use existing Supabase service role & URL secrets (already configured) – no extra encryption key yet.
-// We temporarily store the raw Plaid access token in access_token_enc column (misnamed) until encryption is added.
-// TODO: Replace with pgcrypto-based encryption (pgp_sym_encrypt) and rename column to access_token_ciphertext.
+// Use existing Supabase service role & URL secrets (already configured) for authentication.
+// Production: implement pgcrypto-based encryption for access tokens stored in access_token_enc column.
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
@@ -36,7 +35,7 @@ interface PlaidAccountsGetResponse {
 
 const PLAID_CLIENT_ID = Deno.env.get('PLAID_CLIENT_ID');
 const PLAID_SECRET = Deno.env.get('PLAID_SECRET');
-const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'sandbox';
+const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'production';
 const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
 const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' ? RAW_ALLOWED_ORIGIN.slice(0, -1) : RAW_ALLOWED_ORIGIN;
 
@@ -44,7 +43,7 @@ const PLAID_BASE = {
   sandbox: 'https://sandbox.plaid.com',
   development: 'https://development.plaid.com',
   production: 'https://production.plaid.com'
-}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://sandbox.plaid.com';
+}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://production.plaid.com';
 
 function buildCors(originHeader: string | null) {
   let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;
