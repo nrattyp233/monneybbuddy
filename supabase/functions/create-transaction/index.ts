@@ -71,77 +71,64 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: 'Invalid input' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
-    // Discover available columns on transactions
-    const { data: columns, error: colErr } = await supabaseAdmin
-      .from('information_schema.columns' as any)
-      .select('column_name, data_type, udt_name')
-      .eq('table_schema', 'public')
-      .eq('table_name', 'transactions');
+    // Attempt 1: Current app schema (from_details/to_details/amount/fee/...)
+    const attempt1: Record<string, any> = {
+      user_id: user.id,
+      from_details: user.email,
+      to_details: to,
+      amount,
+      fee: typeof fee === 'number' ? fee : 0,
+      description: description || null,
+      type: kind || 'send',
+      status: 'Pending',
+      payment_method: payment_method || null,
+      from_account_id: from_account_id || null,
+      to_account_id: to_account_id || null,
+      geo_fence: geoFence || null,
+      time_restriction: timeRestriction || null
+    };
 
-    if (colErr) {
-      return new Response(JSON.stringify({ error: 'Failed to read schema', details: colErr.message }), { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+    // Clean nulls so we don't set non-existent columns on some DBs
+    const clean = (obj: Record<string, any>) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null && v !== undefined));
+
+    let { error: insertErr1 } = await supabaseAdmin.from('transactions').insert(clean(attempt1));
+
+    // If enum/text mismatch on status, try uppercase
+    if (insertErr1 && /enum|invalid input value for enum|status/i.test(insertErr1.message || '')) {
+      const attempt1b = { ...attempt1, status: 'PENDING' };
+      insertErr1 = (await supabaseAdmin.from('transactions').insert(clean(attempt1b))).error;
     }
 
-    const colSet = new Set((columns || []).map((c: any) => c.column_name));
-    const colMap: Record<string, any> = {};
+    if (!insertErr1) {
+      return new Response(JSON.stringify({ success: true, variant: 'v1' }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+    }
 
-    // Basic identity fields
-    if (colSet.has('user_id')) colMap['user_id'] = user.id;
-
-    // Sender/recipient fields
-    if (colSet.has('from_details')) colMap['from_details'] = user.email;
-    if (colSet.has('to_details')) colMap['to_details'] = to;
-    if (!colSet.has('from_details') && colSet.has('user_from')) colMap['user_from'] = user.id;
-    if (!colSet.has('to_details') && colSet.has('user_to')) {
-      // If we don't have the recipient id, store email in metadata
-      colMap['user_to'] = user.id; // fallback to self; adjust below via metadata
-      if (colSet.has('metadata')) {
-        colMap['metadata'] = { ...(colMap['metadata'] || {}), to_email: to };
+    // Attempt 2: Legacy/alt schema (user_from/user_to, amount_cents/service_fee_cents, metadata)
+    const attempt2: Record<string, any> = {
+      user_from: user.id,
+      user_to: user.id, // fallback; store real recipient in metadata
+      amount_cents: Math.round(amount * 100),
+      service_fee_cents: Math.round((typeof fee === 'number' ? fee : 0) * 100),
+      currency: 'usd',
+      status: 'PENDING',
+      metadata: {
+        to_email: to,
+        description: description || '',
+        type: kind || 'send',
+        payment_method: payment_method || null,
+        from_account_id: from_account_id || null,
+        to_account_id: to_account_id || null,
+        geoFence: geoFence || null,
+        timeRestriction: timeRestriction || null
       }
+    };
+    const { error: insertErr2 } = await supabaseAdmin.from('transactions').insert(clean(attempt2));
+
+    if (!insertErr2) {
+      return new Response(JSON.stringify({ success: true, variant: 'v2' }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
-    // Amount and fee mapping
-    if (colSet.has('amount')) colMap['amount'] = amount;
-    else if (colSet.has('amount_cents')) colMap['amount_cents'] = Math.round(amount * 100);
-
-    const feeValue = typeof fee === 'number' ? fee : 0;
-    if (colSet.has('fee')) colMap['fee'] = feeValue;
-    else if (colSet.has('service_fee_cents')) colMap['service_fee_cents'] = Math.round(feeValue * 100);
-
-    // Description
-    if (colSet.has('description')) colMap['description'] = description || null;
-    else if (colSet.has('metadata')) colMap['metadata'] = { ...(colMap['metadata'] || {}), description: description || '' };
-
-    // Type
-    if (colSet.has('type')) colMap['type'] = kind || 'send';
-
-    // Status
-    if (colSet.has('status')) {
-      // Prefer "Pending" if expecting text; if enum uppercase might be required, the DB will check
-      colMap['status'] = 'Pending';
-    }
-
-    // Payment method
-    if (payment_method && colSet.has('payment_method')) colMap['payment_method'] = payment_method;
-
-    // Account linkage
-    if (from_account_id && colSet.has('from_account_id')) colMap['from_account_id'] = from_account_id;
-    if (to_account_id && colSet.has('to_account_id')) colMap['to_account_id'] = to_account_id;
-
-    // Restrictions
-    if (geoFence && colSet.has('geo_fence')) colMap['geo_fence'] = geoFence;
-    if (timeRestriction && colSet.has('time_restriction')) colMap['time_restriction'] = timeRestriction;
-    if ((!colSet.has('geo_fence') || !colSet.has('time_restriction')) && colSet.has('metadata')) {
-      colMap['metadata'] = { ...(colMap['metadata'] || {}), geoFence: geoFence || null, timeRestriction: timeRestriction || null };
-    }
-
-    // Insert
-    const { error: insertError } = await supabaseAdmin.from('transactions').insert(colMap);
-    if (insertError) {
-      return new Response(JSON.stringify({ success: false, error: 'Insert failed', details: insertError.message }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
-    }
-
-    return new Response(JSON.stringify({ success: true }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+    return new Response(JSON.stringify({ success: false, error: 'Insert failed', details: insertErr1?.message || insertErr2?.message }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
 
   } catch (e: any) {
     return new Response(JSON.stringify({ error: 'Internal error', details: String(e?.message || e) }), { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
