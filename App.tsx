@@ -421,7 +421,19 @@ const App: React.FC = () => {
             
         } catch (error: any) {
             console.error("Error creating transfer:", error);
-            alert(`Failed to create transfer. Reason: ${error.message || 'An unknown error occurred.'}`);
+            
+            // Extract meaningful error message
+            let errorMessage = 'An unknown error occurred.';
+            if (error.message) {
+                errorMessage = error.message;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            } else if (error.details) {
+                errorMessage = error.details;
+            }
+            
+            // Show user-friendly error
+            alert(`Failed to create transfer. Reason: ${errorMessage}`);
             throw error; // Re-throw for the UI component
         }
     };
