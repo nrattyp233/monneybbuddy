@@ -52,6 +52,14 @@ function buildCors(originHeader: string | null) {
     if (normalizedIncoming === NORMALIZED_ALLOWED_ORIGIN) {
       allowOrigin = normalizedIncoming;
     }
+    // Allow any Netlify deploy preview URL for moneybuddygeo
+    else if (normalizedIncoming.includes('moneybuddygeo.netlify.app')) {
+      allowOrigin = normalizedIncoming;
+    }
+    // Allow localhost for development
+    else if (normalizedIncoming.includes('localhost') || normalizedIncoming.includes('127.0.0.1')) {
+      allowOrigin = normalizedIncoming;
+    }
   }
   return {
     'Access-Control-Allow-Origin': allowOrigin,

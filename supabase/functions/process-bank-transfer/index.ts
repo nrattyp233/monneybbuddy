@@ -10,8 +10,33 @@ const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const PLAID_CLIENT_ID = Deno.env.get('PLAID_CLIENT_ID');
 const PLAID_SECRET = Deno.env.get('PLAID_SECRET');
 const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'sandbox';
+const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
+const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' ? RAW_ALLOWED_ORIGIN.slice(0, -1) : RAW_ALLOWED_ORIGIN;
 
 const supabase = createClient(SUPABASE_URL!, SUPABASE_SERVICE_ROLE_KEY!);
+
+function buildCors(originHeader: string | null) {
+  let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;
+  if (NORMALIZED_ALLOWED_ORIGIN !== '*' && originHeader) {
+    const normalizedIncoming = originHeader.endsWith('/') ? originHeader.slice(0, -1) : originHeader;
+    if (normalizedIncoming === NORMALIZED_ALLOWED_ORIGIN) {
+      allowOrigin = normalizedIncoming;
+    }
+    // Allow any Netlify deploy preview URL for moneybuddygeo
+    else if (normalizedIncoming.includes('moneybuddygeo.netlify.app')) {
+      allowOrigin = normalizedIncoming;
+    }
+    // Allow localhost for development
+    else if (normalizedIncoming.includes('localhost') || normalizedIncoming.includes('127.0.0.1')) {
+      allowOrigin = normalizedIncoming;
+    }
+  }
+  return {
+    'Access-Control-Allow-Origin': allowOrigin,
+    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+    'Access-Control-Allow-Methods': 'POST,OPTIONS'
+  };
+}
 
 interface TransferRequest {
   transactionId: string;
@@ -56,10 +81,17 @@ function isWithinGeoFence(userLat: number, userLon: number, geoFence: any): bool
 }
 
 serve(async (req) => {
+  const originHeader = req.headers.get('origin');
+  const corsHeaders = buildCors(originHeader);
+  
+  if (req.method === 'OPTIONS') {
+    return new Response(null, { status: 200, headers: corsHeaders });
+  }
+  
   if (req.method !== 'POST') {
     return new Response(JSON.stringify({ error: 'Method not allowed' }), {
       status: 405,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
   }
 
@@ -179,7 +211,7 @@ serve(async (req) => {
       transactionId: transactionId
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
 
   } catch (error: any) {
@@ -190,7 +222,7 @@ serve(async (req) => {
       error: error.message || 'Transfer failed'
     }), {
       status: 400,
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...corsHeaders },
     });
   }
 });

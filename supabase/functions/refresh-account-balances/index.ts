@@ -35,12 +35,24 @@ async function sleep(ms: number): Promise<void> {
 
 function buildCors(originHeader: string | null) {
   let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;
+  
   if (NORMALIZED_ALLOWED_ORIGIN !== '*' && originHeader) {
     const normalizedIncoming = originHeader.endsWith('/') ? originHeader.slice(0, -1) : originHeader;
+    
+    // Allow exact match with configured origin
     if (normalizedIncoming === NORMALIZED_ALLOWED_ORIGIN) {
       allowOrigin = normalizedIncoming;
     }
+    // Allow any Netlify deploy preview URL for moneybuddygeo
+    else if (normalizedIncoming.includes('moneybuddygeo.netlify.app')) {
+      allowOrigin = normalizedIncoming;
+    }
+    // Allow localhost for development
+    else if (normalizedIncoming.includes('localhost') || normalizedIncoming.includes('127.0.0.1')) {
+      allowOrigin = normalizedIncoming;
+    }
   }
+  
   return {
     'Access-Control-Allow-Origin': allowOrigin,
     'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
