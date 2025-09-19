@@ -67,8 +67,18 @@ serve(async (req) => {
       timeRestriction
     } = body || {};
 
+    console.log('Request body:', JSON.stringify(body, null, 2));
+
     if (!to || typeof amount !== 'number' || amount <= 0) {
-      return new Response(JSON.stringify({ error: 'Invalid input' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+      console.log('❌ Invalid input validation failed:', { to, amount, validAmount: typeof amount === 'number' && amount > 0 });
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'Invalid input', 
+        details: `Missing or invalid fields: to=${to}, amount=${amount} (type: ${typeof amount})` 
+      }), { 
+        status: 400, 
+        headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+      });
     }
 
     console.log('Creating transaction for user:', user.id, 'to:', to, 'amount:', amount);
