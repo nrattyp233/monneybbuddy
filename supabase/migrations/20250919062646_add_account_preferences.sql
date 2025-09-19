@@ -10,8 +10,8 @@ ADD COLUMN is_default_receive BOOLEAN DEFAULT false;
 
 -- Add account tracking columns to transactions table
 ALTER TABLE transactions
-ADD COLUMN from_account_id TEXT REFERENCES accounts(id),
-ADD COLUMN to_account_id TEXT REFERENCES accounts(id),
+ADD COLUMN from_account_id UUID REFERENCES accounts(id),
+ADD COLUMN to_account_id UUID REFERENCES accounts(id),
 ADD COLUMN completed_at TIMESTAMPTZ;
 
 -- Create index for faster lookups
