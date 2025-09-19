@@ -124,6 +124,39 @@ const App: React.FC = () => {
         fetchData();
     }, [user, fetchData]);
 
+    // Auto-refresh balances every 5 minutes when user is active
+    useEffect(() => {
+        if (!user) return;
+
+        const autoRefresh = async () => {
+            console.log('🔄 Auto-refreshing balances...');
+            try {
+                const supabase = getSupabase();
+                const { data, error } = await supabase.functions.invoke('refresh-account-balances');
+                
+                if (!error && data?.success) {
+                    console.log(`✅ Auto-refresh: Updated ${data.updatedAccounts} accounts`);
+                    await fetchData(); // Refresh UI with new balances
+                } else {
+                    console.warn('⚠️ Auto-refresh failed:', error?.message || 'Unknown error');
+                }
+            } catch (error) {
+                console.warn('⚠️ Auto-refresh error:', error);
+            }
+        };
+
+        // Initial auto-refresh after 10 seconds
+        const initialTimeout = setTimeout(autoRefresh, 10000);
+        
+        // Then refresh every 5 minutes
+        const interval = setInterval(autoRefresh, 5 * 60 * 1000);
+
+        return () => {
+            clearTimeout(initialTimeout);
+            clearInterval(interval);
+        };
+    }, [user, fetchData]);
+
     // --- Balance Refresh Handler ---
     const handleRefreshBalances = async () => {
         if (!user || isRefreshingBalances) return;
