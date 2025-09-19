@@ -379,26 +379,25 @@ const App: React.FC = () => {
                 throw new Error("Insufficient funds to cover the amount and transaction fee.");
             }
 
-            // Create pending transaction record - recipient will choose destination account
-            const { error: insertError } = await supabase.from('transactions').insert({
-                user_id: user.id,
-                from_details: user.email,
-                to_details: to,
-                from_account_id: fromAccountId,
-                // to_account_id will be set when recipient accepts
-                amount: amount,
-                fee: fee,
-                description: description,
-                type: 'send',
-                status: 'Pending',
-                payment_method: 'bank_transfer',
-                geo_fence: geoFence,
-                time_restriction: timeRestriction
+            // Create pending transaction record via schema-aware edge function
+            const { data: createTxData, error: createTxError } = await supabase.functions.invoke('create-transaction', {
+                body: {
+                    to,
+                    amount,
+                    fee,
+                    description,
+                    kind: 'send',
+                    payment_method: 'bank_transfer',
+                    from_account_id: fromAccountId,
+                    geoFence,
+                    timeRestriction
+                }
             });
-            
-            if (insertError) {
-                console.error('❌ Failed to create transaction record:', insertError);
-                throw insertError;
+
+            if (createTxError || (createTxData && createTxData.success === false)) {
+                const details = createTxError?.message || createTxData?.details || 'Unknown error';
+                console.error('❌ Failed to create transaction record:', details);
+                throw new Error(details);
             }
 
             console.log('✅ Pending bank transfer created successfully');
@@ -503,16 +502,18 @@ const App: React.FC = () => {
         if (!user || !user.email) return;
         const supabase = getSupabase();
         try {
-            const { error } = await supabase.from('transactions').insert({
-                user_id: user.id,
-                from_details: user.email,
-                to_details: to,
-                amount: amount,
-                description: description,
-                type: 'request',
-                status: 'Pending',
+            const { data, error } = await supabase.functions.invoke('create-transaction', {
+                body: {
+                    to,
+                    amount,
+                    description,
+                    kind: 'request'
+                }
             });
-            if (error) throw error;
+            if (error || (data && data.success === false)) {
+                const details = error?.message || data?.details || 'Unknown error';
+                throw new Error(details);
+            }
             await fetchData();
             setActiveTab('history');
         } catch (error: any)
