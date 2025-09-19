@@ -135,8 +135,16 @@ const App: React.FC = () => {
                 const { data, error } = await supabase.functions.invoke('refresh-account-balances');
                 
                 if (!error && data?.success) {
-                    console.log(`✅ Auto-refresh: Updated ${data.updatedAccounts} accounts`);
-                    await fetchData(); // Refresh UI with new balances
+                    if (data.needsReconnection) {
+                        console.log('ℹ️ Auto-refresh: Plaid reconnection needed');
+                    } else if (data.needsSetup) {
+                        console.log('ℹ️ Auto-refresh: Database setup needed');
+                    } else if (data.updatedAccounts > 0) {
+                        console.log(`✅ Auto-refresh: Updated ${data.updatedAccounts} accounts`);
+                        await fetchData(); // Only refresh UI if balances actually updated
+                    } else {
+                        console.log('ℹ️ Auto-refresh: No accounts to update');
+                    }
                 } else {
                     console.warn('⚠️ Auto-refresh failed:', error?.message || 'Unknown error');
                 }
@@ -179,7 +187,16 @@ const App: React.FC = () => {
             if (data.success) {
                 // Refresh the UI data after successful balance update
                 await fetchData();
-                alert(`✅ Successfully updated balances for ${data.updatedAccounts} accounts!`);
+                
+                if (data.needsReconnection) {
+                    alert('⚠️ To refresh balances, please disconnect and reconnect your bank accounts in settings.');
+                } else if (data.needsSetup) {
+                    alert('⚠️ Database setup required. Please apply the database migrations first.');
+                } else if (data.updatedAccounts > 0) {
+                    alert(`✅ Successfully updated balances for ${data.updatedAccounts} accounts!`);
+                } else {
+                    alert('ℹ️ No accounts were updated. You may need to connect bank accounts first.');
+                }
             } else {
                 alert('⚠️ Balance refresh completed with some errors. Check console for details.');
             }
