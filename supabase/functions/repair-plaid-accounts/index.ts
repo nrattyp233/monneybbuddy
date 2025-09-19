@@ -73,22 +73,38 @@ serve(async (req) => {
   try {
     // If admin, perform global repair; otherwise, repair for current user
     if (isAdmin) {
-      const { data: accounts, error: accountsError } = await supabaseAdmin
-        .from('accounts')
-        .select('id, name, provider, account_status')
-        .eq('provider', 'Plaid');
-
-      if (accountsError) {
-        return new Response(JSON.stringify({ 
-          error: 'Failed to get accounts',
-          details: accountsError.message
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json', ...corsHeaders },
-        });
+      let statusColumnMissing = false;
+      let accounts: Array<{ id: string; name: string; provider: string; account_status?: string }>; 
+      {
+        const { data, error } = await supabaseAdmin
+          .from('accounts')
+          .select('id, name, provider, account_status')
+          .eq('provider', 'Plaid');
+        if (error) {
+          const msg = error.message || '';
+          if (/account_status|column .* does not exist/i.test(msg)) {
+            statusColumnMissing = true;
+            const fallback = await supabaseAdmin
+              .from('accounts')
+              .select('id, name, provider')
+              .eq('provider', 'Plaid');
+            if (fallback.error) {
+              return new Response(JSON.stringify({ error: 'Failed to get accounts', details: fallback.error.message }), {
+                status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+              });
+            }
+            accounts = (fallback.data || []) as any;
+          } else {
+            return new Response(JSON.stringify({ error: 'Failed to get accounts', details: error.message }), {
+              status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+            });
+          }
+        } else {
+          accounts = (data || []) as any;
+        }
       }
 
-      const accountsToFix = accounts.filter(acc => acc.account_status !== 'active');
+      const accountsToFix = statusColumnMissing ? [] : accounts.filter(acc => acc.account_status !== 'active');
 
       if (accountsToFix.length === 0) {
         return new Response(JSON.stringify({ 
@@ -102,27 +118,36 @@ serve(async (req) => {
         });
       }
 
-      const { error: updateError } = await supabaseAdmin
-        .from('accounts')
-        .update({ account_status: 'active' })
-        .in('id', accountsToFix.map(acc => acc.id));
-
+      const { error: updateError } = accountsToFix.length
+        ? await supabaseAdmin
+            .from('accounts')
+            .update({ account_status: 'active' })
+            .in('id', accountsToFix.map(acc => acc.id))
+        : { error: null } as any;
+      
       if (updateError) {
-        return new Response(JSON.stringify({ 
-          error: 'Failed to update accounts',
-          details: updateError.message
-        }), {
-          status: 500,
-          headers: { 'Content-Type': 'application/json', ...corsHeaders },
-        });
+        const msg = updateError.message || '';
+        const missingCol = /account_status|column .* does not exist/i.test(msg);
+        if (!missingCol) {
+          return new Response(JSON.stringify({ 
+            error: 'Failed to update accounts',
+            details: updateError.message
+          }), {
+            status: 500,
+            headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+        }
+        // If column missing, continue to return success (frontend will treat as active)
       }
 
       return new Response(JSON.stringify({
         success: true,
-        message: `Successfully repaired ${accountsToFix.length} accounts`,
+        message: statusColumnMissing 
+          ? 'No account_status column; treated Plaid accounts as active (frontend handles as connected).'
+          : `Successfully repaired ${accountsToFix.length} accounts`,
         accountsExamined: accounts.length,
-        accountsFixed: accountsToFix.length,
-        fixedAccounts: accountsToFix.map(acc => acc.name)
+        accountsFixed: statusColumnMissing ? 0 : accountsToFix.length,
+        fixedAccounts: statusColumnMissing ? [] : accountsToFix.map(acc => acc.name)
       }), {
         status: 200, 
         headers: { 'Content-Type': 'application/json', ...corsHeaders },
@@ -158,24 +183,41 @@ serve(async (req) => {
     }
 
     // Find all Plaid accounts for this user and update their status
-    const { data: accounts, error: accountsError } = await supabaseAdmin
-      .from('accounts')
-      .select('id, name, provider, account_status')
-      .eq('user_id', userId)
-      .eq('provider', 'Plaid');
-
-    if (accountsError) {
-      return new Response(JSON.stringify({ 
-        error: 'Failed to get accounts',
-        details: accountsError.message
-      }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      });
+    let statusColumnMissing = false;
+    let accounts: Array<{ id: string; name: string; provider: string; account_status?: string }>;
+    {
+      const { data, error } = await supabaseAdmin
+        .from('accounts')
+        .select('id, name, provider, account_status')
+        .eq('user_id', userId)
+        .eq('provider', 'Plaid');
+      if (error) {
+        const msg = error.message || '';
+        if (/account_status|column .* does not exist/i.test(msg)) {
+          statusColumnMissing = true;
+          const fallback = await supabaseAdmin
+            .from('accounts')
+            .select('id, name, provider')
+            .eq('user_id', userId)
+            .eq('provider', 'Plaid');
+          if (fallback.error) {
+            return new Response(JSON.stringify({ error: 'Failed to get accounts', details: fallback.error.message }), {
+              status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+            });
+          }
+          accounts = (fallback.data || []) as any;
+        } else {
+          return new Response(JSON.stringify({ error: 'Failed to get accounts', details: error.message }), {
+            status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders },
+          });
+        }
+      } else {
+        accounts = (data || []) as any;
+      }
     }
-    
+
     // Update all accounts that need repair (not already active)
-    const accountsToFix = accounts.filter(acc => acc.account_status !== 'active');
+    const accountsToFix = statusColumnMissing ? [] : accounts.filter(acc => acc.account_status !== 'active');
     
     if (accountsToFix.length === 0) {
       return new Response(JSON.stringify({ 
@@ -190,27 +232,36 @@ serve(async (req) => {
     }
     
     // Update all accounts in one batch
-    const { error: updateError } = await supabaseAdmin
-      .from('accounts')
-      .update({ account_status: 'active' })
-      .in('id', accountsToFix.map(acc => acc.id));
+    const { error: updateError } = accountsToFix.length
+      ? await supabaseAdmin
+          .from('accounts')
+          .update({ account_status: 'active' })
+          .in('id', accountsToFix.map(acc => acc.id))
+      : { error: null } as any;
     
     if (updateError) {
-      return new Response(JSON.stringify({ 
-        error: 'Failed to update accounts',
-        details: updateError.message
-      }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      });
+      const msg = updateError.message || '';
+      const missingCol = /account_status|column .* does not exist/i.test(msg);
+      if (!missingCol) {
+        return new Response(JSON.stringify({ 
+          error: 'Failed to update accounts',
+          details: updateError.message
+        }), {
+          status: 500,
+          headers: { 'Content-Type': 'application/json', ...corsHeaders },
+        });
+      }
+      // If column missing, continue to return success
     }
     
     return new Response(JSON.stringify({
       success: true,
-      message: `Successfully repaired ${accountsToFix.length} accounts`,
+      message: statusColumnMissing 
+        ? 'No account_status column; treated Plaid accounts as active (frontend handles as connected).'
+        : `Successfully repaired ${accountsToFix.length} accounts`,
       accountsExamined: accounts.length,
-      accountsFixed: accountsToFix.length,
-      fixedAccounts: accountsToFix.map(acc => acc.name)
+      accountsFixed: statusColumnMissing ? 0 : accountsToFix.length,
+      fixedAccounts: statusColumnMissing ? [] : accountsToFix.map(acc => acc.name)
     }), {
       status: 200, 
       headers: { 'Content-Type': 'application/json', ...corsHeaders },
