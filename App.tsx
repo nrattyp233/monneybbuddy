@@ -92,11 +92,14 @@ const App: React.FC = () => {
         const supabase = getSupabase();
 
         try {
-            console.log('Fetching data for user:', user.id); // Debug logging
+            console.log('🔍 DEBUGGING: Fetching data for user:', user.id, 'email:', user.email); // Debug logging
+            
+            const transactionQuery = `from_details.eq.${user.email},to_details.eq.${user.email}`;
+            console.log('🔍 DEBUGGING: Transaction query:', transactionQuery);
             
             const [accountsRes, transactionsRes, savingsRes] = await Promise.all([
                 supabase.from('accounts').select('*').eq('user_id', user.id),
-                supabase.from('transactions').select('*').or(`from_details.eq.${user.email},to_details.eq.${user.email}`).order('created_at', { ascending: false }),
+                supabase.from('transactions').select('*').or(transactionQuery).order('created_at', { ascending: false }),
                 supabase.from('locked_savings').select('*').eq('user_id', user.id)
             ]);
 
@@ -113,8 +116,30 @@ const App: React.FC = () => {
                 throw savingsRes.error;
             }
 
+            console.log('🔍 DEBUGGING: Raw transactions returned:', transactionsRes.data?.length || 0);
+            if (transactionsRes.data && transactionsRes.data.length > 0) {
+                console.log('🔍 DEBUGGING: First few transactions:', transactionsRes.data.slice(0, 3).map(t => ({
+                    id: t.id,
+                    from: t.from_details,
+                    to: t.to_details,
+                    amount: t.amount,
+                    status: t.status,
+                    created: t.created_at
+                })));
+            }
+
             console.log('Fetched accounts:', accountsRes.data); // Debug logging
             setAccounts(accountsRes.data as Account[]);
+            
+            console.log('Raw transactions from DB:', transactionsRes.data?.length, 'transactions');
+            console.log('Transaction details:', transactionsRes.data?.map(t => ({ 
+                id: t.id, 
+                from: t.from_details, 
+                to: t.to_details, 
+                amount: t.amount, 
+                status: t.status,
+                type: t.type
+            })));
             
             const formattedTransactions = transactionsRes.data.map(tx => ({
                 ...tx,
