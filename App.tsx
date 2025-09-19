@@ -137,6 +137,7 @@ const App: React.FC = () => {
                 if (!error && data?.success) {
                     if (data.needsReconnection) {
                         console.log('ℹ️ Auto-refresh: Plaid reconnection needed');
+                        setIsConnectAccountModalOpen(true);
                     } else if (data.needsSetup) {
                         console.log('ℹ️ Auto-refresh: Database setup needed');
                     } else if (data.updatedAccounts > 0) {
@@ -189,7 +190,8 @@ const App: React.FC = () => {
                 await fetchData();
                 
                 if (data.needsReconnection) {
-                    alert('⚠️ To refresh balances, please disconnect and reconnect your bank accounts in settings.');
+                    setIsConnectAccountModalOpen(true);
+                    alert('We need to refresh your bank connection. Please complete the Plaid prompt to re-authorize. No need to remove your accounts.');
                 } else if (data.needsSetup) {
                     alert('⚠️ Database setup required. Please apply the database migrations first.');
                 } else if (data.updatedAccounts > 0) {
