@@ -425,19 +425,34 @@ serve(async (req) => {
         }
 
       } catch (itemError) {
-        console.error(`Error processing Plaid item ${item.item_id}:`, itemError);
+        console.error(`❌ Error processing Plaid item ${item.item_id}:`, itemError);
         errors.push(`Error processing item ${item.item_id}: ${String(itemError)}`);
+        
+        // Log detailed error for production debugging
+        console.error(`🔍 Detailed error for item ${item.item_id}:`, {
+          error: itemError,
+          stack: itemError instanceof Error ? itemError.stack : undefined,
+          userId,
+          timestamp: new Date().toISOString()
+        });
       }
     }
 
+    // Clear rate limit on successful completion
+    lastRefreshCache.delete(userId);
+
     const result = {
       success: true,
-      message: `Balance refresh completed. Updated ${totalUpdated} accounts.`,
+      message: totalUpdated > 0 
+        ? `Balance refresh completed successfully. Updated ${totalUpdated} account${totalUpdated === 1 ? '' : 's'}.`
+        : 'Balance refresh completed, but no accounts were updated.',
       updatedAccounts: totalUpdated,
-      errors: errors.length > 0 ? errors : undefined
+      timestamp: new Date().toISOString(),
+      errors: errors.length > 0 ? errors : undefined,
+      plaidEnvironment: PLAID_ENV
     };
 
-    console.log(`🎉 Balance refresh summary:`, result);
+    console.log(`🎉 Balance refresh summary for user ${userId}:`, result);
 
     return new Response(JSON.stringify(result), {
       status: 200,
@@ -445,11 +460,30 @@ serve(async (req) => {
     });
 
   } catch (error) {
-    console.error('Unhandled error refreshing account balances:', error);
+    console.error('❌ Unhandled error refreshing account balances:', error);
+    
+    // Clear rate limit on error to allow retry
+    const authHeader = req.headers.get('authorization');
+    if (authHeader) {
+      try {
+        const token = authHeader.substring(7);
+        const parts = token.split('.');
+        if (parts.length === 3) {
+          const payloadRaw = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+          const payload = JSON.parse(payloadRaw);
+          if (payload.sub) {
+            lastRefreshCache.delete(payload.sub);
+          }
+        }
+      } catch {}
+    }
+    
     return new Response(JSON.stringify({ 
       success: false,
-      error: 'Server exception refreshing account balances', 
-      details: String(error) 
+      error: 'Server exception during balance refresh. Please try again in a moment.', 
+      details: error instanceof Error ? error.message : String(error),
+      timestamp: new Date().toISOString(),
+      canRetry: true
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }

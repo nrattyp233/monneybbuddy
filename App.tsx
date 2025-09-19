@@ -41,6 +41,8 @@ const App: React.FC = () => {
     const [accountToRemove, setAccountToRemove] = useState<Account | null>(null);
     const [isClaiming, setIsClaiming] = useState<string | null>(null); // Track claiming state by transaction ID
     const [isRefreshingBalances, setIsRefreshingBalances] = useState(false);
+    const [lastRefreshTime, setLastRefreshTime] = useState<number>(0);
+    const [refreshError, setRefreshError] = useState<string | null>(null);
 
     const isAdmin = user?.email === ADMIN_EMAIL;
 
@@ -192,11 +194,25 @@ const App: React.FC = () => {
         };
     }, [user, fetchData]);
 
-    // --- Balance Refresh Handler ---
+    // --- Production-Ready Balance Refresh Handler ---
     const handleRefreshBalances = async () => {
         if (!user || isRefreshingBalances) return;
         
+        // Debounce: prevent rapid successive refreshes
+        const now = Date.now();
+        const timeSinceLastRefresh = now - lastRefreshTime;
+        const DEBOUNCE_MS = 5000; // 5 seconds minimum between refreshes
+        
+        if (timeSinceLastRefresh < DEBOUNCE_MS) {
+            const remainingSeconds = Math.ceil((DEBOUNCE_MS - timeSinceLastRefresh) / 1000);
+            alert(`⏳ Please wait ${remainingSeconds} more seconds before refreshing again.`);
+            return;
+        }
+        
         setIsRefreshingBalances(true);
+        setRefreshError(null);
+        setLastRefreshTime(now);
+        
         try {
             console.log('🔄 Refreshing account balances...');
             const supabase = getSupabase();
@@ -205,33 +221,82 @@ const App: React.FC = () => {
             
             if (error) {
                 console.error('❌ Balance refresh failed:', error);
-                alert(`Failed to refresh balances: ${error.message}`);
+                const errorMsg = error.message || 'Unknown server error';
+                setRefreshError(errorMsg);
+                
+                // Show user-friendly error based on error type
+                if (errorMsg.includes('FunctionsHttpError')) {
+                    alert('⚠️ Server configuration issue. Please check that Plaid credentials are properly set in your project settings.');
+                } else if (errorMsg.includes('timeout')) {
+                    alert('⏳ Request timed out. Please try again in a moment.');
+                } else {
+                    alert(`❌ Failed to refresh balances: ${errorMsg}`);
+                }
                 return;
             }
             
             console.log('✅ Balance refresh result:', data);
             
-            if (data.success) {
+            if (data?.success) {
+                // Clear any previous errors
+                setRefreshError(null);
+                
                 // Refresh the UI data after successful balance update
                 await fetchData();
                 
-                if (data.needsReconnection) {
+                // Handle specific response flags from the server
+                if (data.rateLimited) {
+                    alert(`⏳ Rate limited: ${data.error}. Please try again later.`);
+                } else if (data.needsReconnection) {
+                    console.log('🔄 Server indicates reconnection needed, opening Plaid modal');
                     setIsConnectAccountModalOpen(true);
-                    alert('We need to refresh your bank connection. Please complete the Plaid prompt to re-authorize. No need to remove your accounts.');
+                    
+                    const plaidError = data.plaidError ? ` (${data.plaidError.code}: ${data.plaidError.message})` : '';
+                    alert(`🔐 Your bank connection needs re-authorization. Please complete the Plaid prompt.${plaidError}`);
                 } else if (data.needsSetup) {
-                    alert('⚠️ Database setup required. Please apply the database migrations first.');
+                    alert('⚠️ Database schema setup required. Please apply the database migrations first.');
+                } else if (data.needsServerConfig) {
+                    alert('⚠️ Server configuration incomplete. Please ensure Plaid credentials are set in project settings.');
+                } else if (data.needsAuth) {
+                    alert('🔐 Authentication required. Please sign in again.');
                 } else if (data.updatedAccounts > 0) {
-                    alert(`✅ Successfully updated balances for ${data.updatedAccounts} accounts!`);
+                    console.log(`✅ Successfully updated ${data.updatedAccounts} accounts`);
+                    // Success - show subtle feedback without modal
+                    setRefreshError(null);
                 } else {
                     alert('ℹ️ No accounts were updated. You may need to connect bank accounts first.');
                 }
+                
+                // Log any warnings/errors from the refresh process
+                if (data.errors && data.errors.length > 0) {
+                    console.warn('⚠️ Refresh completed with warnings:', data.errors);
+                }
+                
             } else {
-                alert('⚠️ Balance refresh completed with some errors. Check console for details.');
+                // Server returned success: false
+                const errorMsg = data?.error || 'Unknown error from server';
+                setRefreshError(errorMsg);
+                
+                if (data?.canRetry) {
+                    alert(`⚠️ ${errorMsg}\n\nYou can try refreshing again in a moment.`);
+                } else {
+                    alert(`❌ ${errorMsg}`);
+                }
             }
             
         } catch (error: any) {
             console.error('❌ Error refreshing balances:', error);
-            alert(`Failed to refresh balances: ${error.message || 'Unknown error'}`);
+            const errorMsg = error.message || 'Network or client error';
+            setRefreshError(errorMsg);
+            
+            // Provide specific guidance based on error type
+            if (errorMsg.includes('NetworkError') || errorMsg.includes('fetch')) {
+                alert('🌐 Network error. Please check your connection and try again.');
+            } else if (errorMsg.includes('FunctionsHttpError')) {
+                alert('⚠️ Server configuration issue. Please contact support if this persists.');
+            } else {
+                alert(`❌ Failed to refresh balances: ${errorMsg}`);
+            }
         } finally {
             setIsRefreshingBalances(false);
         }
