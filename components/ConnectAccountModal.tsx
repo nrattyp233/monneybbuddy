@@ -76,7 +76,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
 
             if (funcError) throw funcError;
 
-            console.log('Plaid exchange response:', data); // Debug logging
+            // Successfully exchanged public token
             
             // If backend persistence failed, fall back to inserting accounts client-side.
             if (data && data.accounts && Array.isArray(data.accounts) && data.persisted === false) {

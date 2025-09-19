@@ -183,7 +183,7 @@ serve(async (req) => {
       console.warn('No authenticated user id; skipping persistence');
     } else {
       try {
-        console.log(`Persisting ${mappedAccounts.length} accounts for user ${userId}`); // Debug logging
+        // Persisting accounts to database
         
         // Safely upsert plaid_items (store token raw for now)
         let itemStored = false;
@@ -216,7 +216,7 @@ serve(async (req) => {
         // Safely upsert each account into plaid_accounts with raw JSON and ensure an accounts row exists
         for (const a of accountsData.accounts) {
           const mapped = mappedAccounts.find(m => m.plaid_account_id === a.account_id)!;
-          console.log(`Processing account: ${mapped.name} with balance: ${mapped.balance}`); // Debug logging
+          // Processing account data
           
           try {
             const { error: acctErr } = await supabaseAdmin.from('plaid_accounts').upsert({

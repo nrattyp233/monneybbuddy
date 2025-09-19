@@ -115,7 +115,7 @@ const App: React.FC = () => {
         const supabase = getSupabase();
 
         try {
-            console.log('Fetching data for user:', user.id); // Debug logging
+            // Fetching user data
             
             const [accountsRes, transactionsRes, savingsRes] = await Promise.all([
                 supabase.from('accounts').select('*').eq('user_id', user.id),
@@ -136,7 +136,7 @@ const App: React.FC = () => {
                 throw savingsRes.error;
             }
 
-            console.log('Fetched accounts:', accountsRes.data); // Debug logging
+            // Successfully fetched accounts
             setAccounts(accountsRes.data as Account[]);
             
             const formattedTransactions = transactionsRes.data.map(tx => ({
@@ -483,7 +483,7 @@ const App: React.FC = () => {
     };
 
     const handleConnectionSuccess = async (instantAccounts?: { name: string; balance: number | null; provider: string; type?: string }[]) => {
-        console.log('Connection success with accounts:', instantAccounts); // Debug logging
+        // Account connection successful
         
         if (instantAccounts && instantAccounts.length) {
             // Optimistically merge (avoid duplicates by name)
@@ -498,7 +498,7 @@ const App: React.FC = () => {
                     type: a.type || '',
                     balance: a.balance,
                   }));
-                console.log('Adding new accounts:', additions); // Debug logging
+                // Adding new accounts to state
                 return [...prev, ...additions];
             });
         }
