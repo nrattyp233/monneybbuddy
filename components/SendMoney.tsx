@@ -50,7 +50,8 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
     // Update fromAccountId when accounts change
     useEffect(() => {
         if (accounts.length > 0 && !accounts.find(acc => acc.id === fromAccountId)) {
-            setFromAccountId(accounts[0].id);
+            const firstUsable = accounts.find(acc => acc.balance !== null && acc.account_status !== 'disconnected');
+            setFromAccountId(firstUsable ? firstUsable.id : accounts[0].id);
         }
     }, [accounts, fromAccountId]);
 
@@ -155,10 +156,10 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                         <label htmlFor="fromAccount" className="block text-sm font-medium text-gray-300 mb-1">From Account</label>
                         <select id="fromAccount" name="fromAccount" value={fromAccountId} onChange={(e) => setFromAccountId(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition">
                             {accounts.map(acc => (
-                                <option key={acc.id} value={acc.id} disabled={acc.balance === null || acc.account_status !== 'active'}>
+                                <option key={acc.id} value={acc.id} disabled={acc.balance === null || acc.account_status === 'disconnected'}>
                                     {acc.name} ({acc.provider}) - {acc.balance !== null ? `$${acc.balance.toFixed(2)}` : 'Balance N/A'} 
                                     {acc.is_default_send ? ' [Default Send]' : ''}
-                                    {acc.account_status !== 'active' ? ' [Disconnected]' : ''}
+                                    {acc.account_status === 'disconnected' ? ' [Disconnected]' : ''}
                                 </option>
                             ))}
                         </select>
