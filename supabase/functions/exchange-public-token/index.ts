@@ -68,8 +68,13 @@ serve(async (req) => {
   }
 
   if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
-    return new Response(JSON.stringify({ error: 'Plaid credentials not configured on server.' }), {
-      status: 500,
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Plaid credentials not configured on server.',
+      needsServerConfig: true,
+      guidance: 'Add PLAID_CLIENT_ID and PLAID_SECRET as Supabase project secrets.'
+    }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
@@ -115,8 +120,14 @@ serve(async (req) => {
     if (!exchangeRes.ok) {
       const text = await exchangeRes.text();
       console.error('Plaid exchange error:', { status: exchangeRes.status, body: text });
-      return new Response(JSON.stringify({ error: 'Failed to exchange public token', status: exchangeRes.status, details: text }), {
-        status: 500,
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'Failed to exchange public token', 
+        plaidStatus: exchangeRes.status, 
+        details: text,
+        needsReconnection: exchangeRes.status === 401 || exchangeRes.status === 403
+      }), {
+        status: 200,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
@@ -137,8 +148,14 @@ serve(async (req) => {
     if (!accountsRes.ok) {
       const aText = await accountsRes.text();
       console.error('Plaid accounts/get error:', { status: accountsRes.status, body: aText });
-      return new Response(JSON.stringify({ error: 'Failed to fetch accounts', status: accountsRes.status, details: aText }), {
-        status: 500,
+      return new Response(JSON.stringify({ 
+        success: false,
+        error: 'Failed to fetch accounts', 
+        plaidStatus: accountsRes.status, 
+        details: aText,
+        needsReconnection: accountsRes.status === 401 || accountsRes.status === 403
+      }), {
+        status: 200,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
@@ -267,8 +284,12 @@ serve(async (req) => {
     });
   } catch (e) {
     console.error('Unhandled error exchanging public token:', e);
-    return new Response(JSON.stringify({ error: 'Server exception exchanging public token', details: String(e) }), {
-      status: 500,
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Server exception exchanging public token', 
+      details: String(e) 
+    }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }

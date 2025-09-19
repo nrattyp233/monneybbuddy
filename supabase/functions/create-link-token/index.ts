@@ -70,8 +70,13 @@ serve(async (req) => {
   }
 
   if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
-    return new Response(JSON.stringify({ error: 'Plaid credentials not configured on server.' }), {
-      status: 500,
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Plaid credentials not configured on server.',
+      needsServerConfig: true,
+      guidance: 'Add PLAID_CLIENT_ID and PLAID_SECRET as project secrets in Supabase.'
+    }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
@@ -115,8 +120,18 @@ serve(async (req) => {
     if (!plaidRes.ok) {
       const text = await plaidRes.text();
       console.error('Plaid link/token error:', { status: plaidRes.status, body: text });
-      return new Response(JSON.stringify({ error: 'Failed to create link token', status: plaidRes.status, details: text }), {
-        status: 500,
+      const payload: Record<string, unknown> = {
+        success: false,
+        error: 'Failed to create link token',
+        plaidStatus: plaidRes.status,
+        details: text
+      };
+      if (plaidRes.status === 400 || plaidRes.status === 401 || plaidRes.status === 403) {
+        payload.needsServerConfig = true;
+        payload.guidance = 'Verify PLAID_CLIENT_ID/PLAID_SECRET and allowed products/env. Check ALLOWED_ORIGIN for CORS.';
+      }
+      return new Response(JSON.stringify(payload), {
+        status: 200,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
@@ -128,8 +143,12 @@ serve(async (req) => {
     });
   } catch (e) {
     console.error('Unhandled error creating link token:', e);
-    return new Response(JSON.stringify({ error: 'Server exception creating link token', details: String(e) }), {
-      status: 500,
+    return new Response(JSON.stringify({ 
+      success: false,
+      error: 'Server exception creating link token', 
+      details: String(e) 
+    }), {
+      status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }

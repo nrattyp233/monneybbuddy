@@ -50,10 +50,13 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
             try {
                 const supabase = getSupabase();
                 const { data, error: funcError } = await supabase.functions.invoke('create-link-token');
-
                 if (funcError) throw funcError;
-                if (!data || !data.link_token) throw new Error("Failed to retrieve a link token from the server.");
-
+                if (data && data.needsServerConfig) {
+                    throw new Error(data.guidance || 'Server needs configuration for Plaid.');
+                }
+                if (!data || !data.link_token) {
+                    throw new Error("Failed to retrieve a link token from the server.");
+                }
                 setLinkToken(data.link_token);
             } catch (err: any) {
                 handleFunctionError(err, 'token creation');
@@ -75,6 +78,13 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
             });
 
             if (funcError) throw funcError;
+            if (data && data.needsServerConfig) {
+                throw new Error(data.guidance || 'Server needs configuration for Plaid.');
+            }
+            if (data && data.needsReconnection) {
+                // Surface a clear reconnection message
+                throw new Error('Plaid requires re-authorization. Please try connecting again.');
+            }
 
             console.log('Plaid exchange response:', data); // Debug logging
             
