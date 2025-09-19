@@ -284,7 +284,8 @@ serve(async (req) => {
               provider: mapped.provider,
               type: mapped.type,
               balance: mapped.balance,
-              external_id: a.account_id // Store Plaid account ID for future reference
+              external_id: a.account_id, // Store Plaid account ID for future reference
+              account_status: 'active' // Always mark Plaid accounts as active
             });
             if (insertMirrorErr) {
               console.error(`Error inserting new account ${mapped.name}:`, insertMirrorErr);
@@ -297,7 +298,8 @@ serve(async (req) => {
                 balance: mapped.balance,
                 provider: mapped.provider,
                 type: mapped.type,
-                external_id: a.account_id // Ensure external_id is set
+                external_id: a.account_id, // Ensure external_id is set
+                account_status: 'active' // Always mark Plaid accounts as active
               })
               .eq('id', existingAccount.id)
               .eq('user_id', userId);
