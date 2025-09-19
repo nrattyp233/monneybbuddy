@@ -71,64 +71,125 @@ serve(async (req) => {
       return new Response(JSON.stringify({ error: 'Invalid input' }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
     }
 
-    // Attempt 1: Current app schema (from_details/to_details/amount/fee/...)
-    const attempt1: Record<string, any> = {
-      user_id: user.id,
-      from_details: user.email,
-      to_details: to,
-      amount,
-      fee: typeof fee === 'number' ? fee : 0,
-      description: description || null,
-      type: kind || 'send',
-      status: 'Pending',
-      payment_method: payment_method || null,
-      from_account_id: from_account_id || null,
-      to_account_id: to_account_id || null,
-      geo_fence: geoFence || null,
-      time_restriction: timeRestriction || null
+    console.log('Creating transaction for user:', user.id, 'to:', to, 'amount:', amount);
+
+    // Clean nulls and undefined values
+    const clean = (obj: Record<string, any>) => {
+      const cleaned: Record<string, any> = {};
+      for (const [key, value] of Object.entries(obj)) {
+        if (value !== null && value !== undefined) {
+          cleaned[key] = value;
+        }
+      }
+      return cleaned;
     };
 
-    // Clean nulls so we don't set non-existent columns on some DBs
-    const clean = (obj: Record<string, any>) => Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== null && v !== undefined));
-
-    let { error: insertErr1 } = await supabaseAdmin.from('transactions').insert(clean(attempt1));
-
-    // If enum/text mismatch on status, try uppercase
-    if (insertErr1 && /enum|invalid input value for enum|status/i.test(insertErr1.message || '')) {
-      const attempt1b = { ...attempt1, status: 'PENDING' };
-      insertErr1 = (await supabaseAdmin.from('transactions').insert(clean(attempt1b))).error;
-    }
-
-    if (!insertErr1) {
-      return new Response(JSON.stringify({ success: true, variant: 'v1' }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
-    }
-
-    // Attempt 2: Legacy/alt schema (user_from/user_to, amount_cents/service_fee_cents, metadata)
-    const attempt2: Record<string, any> = {
-      user_from: user.id,
-      user_to: user.id, // fallback; store real recipient in metadata
-      amount_cents: Math.round(amount * 100),
-      service_fee_cents: Math.round((typeof fee === 'number' ? fee : 0) * 100),
-      currency: 'usd',
-      status: 'PENDING',
-      metadata: {
-        to_email: to,
+    try {
+      // Attempt 1: Current app schema (from_details/to_details/amount/fee/...)
+      const attempt1: Record<string, any> = {
+        user_id: user.id,
+        from_details: user.email,
+        to_details: to,
+        amount,
         description: description || '',
         type: kind || 'send',
-        payment_method: payment_method || null,
-        from_account_id: from_account_id || null,
-        to_account_id: to_account_id || null,
-        geoFence: geoFence || null,
-        timeRestriction: timeRestriction || null
+        status: 'Pending'
+      };
+
+      // Add optional fields only if they have values
+      if (typeof fee === 'number' && fee > 0) attempt1.fee = fee;
+      if (payment_method) attempt1.payment_method = payment_method;
+      if (from_account_id) attempt1.from_account_id = from_account_id;
+      if (to_account_id) attempt1.to_account_id = to_account_id;
+      if (geoFence) attempt1.geo_fence = geoFence;
+      if (timeRestriction) attempt1.time_restriction = timeRestriction;
+
+      console.log('Attempting insert with schema v1:', attempt1);
+      let { error: insertErr1 } = await supabaseAdmin.from('transactions').insert(attempt1);
+
+      // Try different status formats if enum error
+      if (insertErr1 && /enum|invalid input|status/i.test(insertErr1.message || '')) {
+        console.log('Trying uppercase status...');
+        const attempt1b = { ...attempt1, status: 'PENDING' };
+        insertErr1 = (await supabaseAdmin.from('transactions').insert(attempt1b)).error;
       }
-    };
-    const { error: insertErr2 } = await supabaseAdmin.from('transactions').insert(clean(attempt2));
 
-    if (!insertErr2) {
-      return new Response(JSON.stringify({ success: true, variant: 'v2' }), { status: 200, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
+      if (!insertErr1) {
+        console.log('✅ Insert successful with v1 schema');
+        return new Response(JSON.stringify({ success: true, variant: 'v1' }), { 
+          status: 200, 
+          headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+        });
+      }
+
+      console.log('❌ Schema v1 failed:', insertErr1.message);
+
+      // Attempt 2: Legacy schema with cents and metadata
+      const attempt2: Record<string, any> = {
+        user_from: user.id,
+        user_to: user.id, // Will store real recipient in metadata
+        amount_cents: Math.round(amount * 100),
+        currency: 'usd',
+        status: 'PENDING',
+        metadata: {
+          to_email: to,
+          description: description || '',
+          type: kind || 'send',
+          from_email: user.email
+        }
+      };
+
+      if (typeof fee === 'number' && fee > 0) {
+        attempt2.service_fee_cents = Math.round(fee * 100);
+      }
+
+      if (payment_method || from_account_id || to_account_id || geoFence || timeRestriction) {
+        attempt2.metadata = {
+          ...attempt2.metadata,
+          payment_method,
+          from_account_id,
+          to_account_id,
+          geoFence,
+          timeRestriction
+        };
+      }
+
+      console.log('Attempting insert with schema v2:', attempt2);
+      const { error: insertErr2 } = await supabaseAdmin.from('transactions').insert(attempt2);
+
+      if (!insertErr2) {
+        console.log('✅ Insert successful with v2 schema');
+        return new Response(JSON.stringify({ success: true, variant: 'v2' }), { 
+          status: 200, 
+          headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+        });
+      }
+
+      console.log('❌ Both schemas failed. v1:', insertErr1.message, 'v2:', insertErr2.message);
+      
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: 'Both insert attempts failed', 
+        details: {
+          v1_error: insertErr1.message,
+          v2_error: insertErr2.message
+        }
+      }), { 
+        status: 400, 
+        headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+      });
+
+    } catch (err: any) {
+      console.error('❌ Unexpected error in transaction creation:', err);
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: 'Unexpected error', 
+        details: err.message || String(err)
+      }), { 
+        status: 500, 
+        headers: { 'Content-Type': 'application/json', ...corsHeaders } 
+      });
     }
-
-    return new Response(JSON.stringify({ success: false, error: 'Insert failed', details: insertErr1?.message || insertErr2?.message }), { status: 400, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
 
   } catch (e: any) {
     return new Response(JSON.stringify({ error: 'Internal error', details: String(e?.message || e) }), { status: 500, headers: { 'Content-Type': 'application/json', ...corsHeaders } });
