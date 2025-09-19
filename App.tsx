@@ -171,7 +171,9 @@ const App: React.FC = () => {
                 alert('Your conditional payment has been sent. The recipient must claim it by meeting the conditions.');
     
             } else {
-                // --- PAYPAL DIRECT TRANSFER (existing logic) ---
+                // --- REAL PAYPAL TRANSFER ---
+                console.log('🚀 Starting real PayPal transfer...', { amount, fee, to, description });
+                
                 const { data: orderData, error: orderError } = await supabase.functions.invoke('create-paypal-order', {
                     body: { 
                         amount: amount.toFixed(2), 
@@ -181,10 +183,19 @@ const App: React.FC = () => {
                     },
                 });
     
-                if (orderError) throw orderError;
-                const { orderId, approval_url } = orderData;
-                if (!orderId || !approval_url) throw new Error("Server did not return a valid PayPal order.");
-    
+                if (orderError) {
+                    console.error('❌ PayPal order creation failed:', orderError);
+                    throw orderError;
+                }
+                
+                console.log('✅ PayPal order created:', orderData);
+                const { orderId, approval_url, success } = orderData;
+                
+                if (!success || !orderId || !approval_url) {
+                    throw new Error("Failed to create PayPal order - missing required data");
+                }
+
+                // Create pending transaction record BEFORE PayPal approval
                 const { error: insertError } = await supabase.from('transactions').insert({
                     user_id: user.id,
                     from_details: user.email,
@@ -195,12 +206,82 @@ const App: React.FC = () => {
                     type: 'send',
                     status: 'Pending',
                     paypal_order_id: orderId,
+                    payment_method: 'paypal'
                 });
-                if (insertError) throw insertError;
-    
-                await fetchData();
-                setActiveTab('history');
-                window.open(approval_url, '_blank', 'noopener,noreferrer');
+                
+                if (insertError) {
+                    console.error('❌ Failed to create transaction record:', insertError);
+                    throw insertError;
+                }
+
+                console.log('💳 Opening PayPal checkout window...');
+                // Open PayPal approval URL in new window
+                const paypalWindow = window.open(approval_url, 'paypal-checkout', 'width=600,height=700,scrollbars=yes');
+                
+                if (!paypalWindow) {
+                    throw new Error('Failed to open PayPal checkout window. Please allow popups and try again.');
+                }
+
+                // Monitor PayPal window completion
+                const checkInterval = setInterval(async () => {
+                    try {
+                        if (paypalWindow.closed) {
+                            clearInterval(checkInterval);
+                            console.log('🔄 PayPal window closed, capturing payment...');
+
+                            // Capture the PayPal payment
+                            const { data: captureData, error: captureError } = await supabase.functions.invoke('capture-paypal-order', {
+                                body: { 
+                                    order_id: orderId,
+                                    user_id: user.id
+                                }
+                            });
+
+                            if (captureError) {
+                                console.error('❌ PayPal capture failed:', captureError);
+                                // Update transaction status to failed
+                                await supabase.from('transactions')
+                                    .update({ status: 'Failed' })
+                                    .eq('paypal_order_id', orderId);
+                                
+                                alert('❌ Payment failed. Please try again.');
+                                return;
+                            }
+
+                            console.log('🎉 PayPal payment captured successfully:', captureData);
+                            
+                            if (captureData.success) {
+                                // Update transaction status to completed
+                                await supabase.from('transactions')
+                                    .update({ 
+                                        status: 'Completed',
+                                        external_transaction_id: captureData.transaction_id
+                                    })
+                                    .eq('paypal_order_id', orderId);
+
+                                alert(`🎉 $${amount} successfully sent to ${to} via PayPal!`);
+                                await fetchData(); // Refresh to show completed transaction
+                                setActiveTab('history');
+                            } else {
+                                alert('⚠️ Payment status unclear. Please check your PayPal account.');
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error in PayPal completion check:', error);
+                        clearInterval(checkInterval);
+                    }
+                }, 2000); // Check every 2 seconds
+
+                // Timeout after 10 minutes
+                setTimeout(() => {
+                    clearInterval(checkInterval);
+                    if (paypalWindow && !paypalWindow.closed) {
+                        paypalWindow.close();
+                        console.log('⏰ PayPal checkout timed out');
+                    }
+                }, 600000); // 10 minutes
+
+                console.log('⏳ Waiting for PayPal approval...');
             }
         } catch (error: any) {
             console.error("Error sending money:", error);

@@ -1,44 +1,49 @@
-// Supabase Edge Function: create-paypal-order
-// Description: Creates a PayPal order for money transfers
+// Supabase Edge Function: capture-paypal-order
+// Description: Captures a PayPal order after user approval
 // Requirements:
 //   Supabase secrets set:
 //     PAYPAL_CLIENT_ID
 //     PAYPAL_CLIENT_SECRET
 //     PAYPAL_API_URL (e.g. 'https://api-m.paypal.com' for production)
-//     ALLOWED_ORIGIN (frontend origin for CORS)
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-interface CreateOrderRequest {
-  amount: string;
-  fee: string;
-  recipient_email: string;
-  description: string;
+interface CaptureOrderRequest {
+  order_id: string;
+  user_id?: string;
 }
 
-interface PayPalAccessTokenResponse {
-  access_token: string;
-  token_type: string;
-  expires_in: number;
-}
-
-interface PayPalOrderResponse {
+interface PayPalCaptureResponse {
   id: string;
   status: string;
-  links: Array<{
-    href: string;
-    rel: string;
-    method: string;
+  purchase_units: Array<{
+    payments: {
+      captures: Array<{
+        id: string;
+        amount: {
+          currency_code: string;
+          value: string;
+        };
+        status: string;
+      }>;
+    };
   }>;
 }
 
 const PAYPAL_CLIENT_ID = Deno.env.get('PAYPAL_CLIENT_ID');
 const PAYPAL_CLIENT_SECRET = Deno.env.get('PAYPAL_CLIENT_SECRET');
 const PAYPAL_API_URL = Deno.env.get('PAYPAL_API_URL') || 'https://api-m.paypal.com';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
 const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' 
   ? RAW_ALLOWED_ORIGIN.slice(0, -1) 
   : RAW_ALLOWED_ORIGIN;
+
+const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+  : null;
 
 function buildCors(originHeader: string | null) {
   let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;
@@ -71,7 +76,7 @@ async function getPayPalAccessToken(): Promise<string> {
     throw new Error(`Failed to get PayPal access token: ${response.status}`);
   }
 
-  const data = await response.json() as PayPalAccessTokenResponse;
+  const data = await response.json();
   return data.access_token;
 }
 
@@ -89,102 +94,92 @@ serve(async (req) => {
   }
 
   try {
-    const body: CreateOrderRequest = await req.json();
-    const { amount, fee, recipient_email, description } = body;
+    const body: CaptureOrderRequest = await req.json();
+    const { order_id, user_id } = body;
 
-    console.log('🎯 Creating PayPal order:', { amount, fee, recipient_email, description });
+    console.log('🎯 Capturing PayPal order:', { order_id, user_id });
 
-    if (!amount || !recipient_email) {
-      return new Response(JSON.stringify({ error: 'Missing required fields: amount, recipient_email' }), {
+    if (!order_id) {
+      return new Response(JSON.stringify({ error: 'Missing order_id' }), {
         status: 400,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
 
-    // Get PayPal access token
-    console.log('🔑 Getting PayPal access token...');
+    console.log('🔑 Getting PayPal access token for capture...');
     const accessToken = await getPayPalAccessToken();
-    console.log('✅ PayPal access token obtained');
 
-    // Calculate total amount (amount + fee)
-    const totalAmount = (parseFloat(amount) + parseFloat(fee || '0')).toFixed(2);
-    console.log('💰 Total amount to transfer:', totalAmount);
-
-    // Create PayPal order
-    const orderPayload = {
-      intent: 'CAPTURE',
-      purchase_units: [{
-        amount: {
-          currency_code: 'USD',
-          value: totalAmount,
-        },
-        description: description || 'MoneyBuddy Transfer',
-        payee: {
-          email_address: recipient_email,
-        },
-      }],
-      application_context: {
-        return_url: `${NORMALIZED_ALLOWED_ORIGIN}/payment-success`,
-        cancel_url: `${NORMALIZED_ALLOWED_ORIGIN}/payment-cancel`,
-        user_action: 'PAY_NOW',
-        payment_method: {
-          payee_preferred: 'IMMEDIATE_PAYMENT_REQUIRED'
-        }
-      },
-    };
-
-    console.log('📦 PayPal order payload:', JSON.stringify(orderPayload, null, 2));
-
-    const orderResponse = await fetch(`${PAYPAL_API_URL}/v2/checkout/orders`, {
+    // Capture the PayPal order
+    console.log('💰 Capturing PayPal order...');
+    const captureResponse = await fetch(`${PAYPAL_API_URL}/v2/checkout/orders/${order_id}/capture`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
-        'PayPal-Request-Id': `moneybuddy-${Date.now()}`,
+        'PayPal-Request-Id': `capture-${order_id}-${Date.now()}`,
       },
-      body: JSON.stringify(orderPayload),
     });
 
-    console.log('📡 PayPal API response status:', orderResponse.status);
+    console.log('📡 PayPal capture response status:', captureResponse.status);
 
-    if (!orderResponse.ok) {
-      const errorText = await orderResponse.text();
-      console.error('❌ PayPal order creation failed:', errorText);
+    if (!captureResponse.ok) {
+      const errorText = await captureResponse.text();
+      console.error('❌ PayPal capture failed:', errorText);
       return new Response(JSON.stringify({ 
-        error: 'Failed to create PayPal order', 
+        error: 'Failed to capture PayPal order', 
         details: errorText,
-        status: orderResponse.status 
+        status: captureResponse.status
       }), {
         status: 500,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
 
-    const orderData = await orderResponse.json() as PayPalOrderResponse;
-    const approvalLink = orderData.links.find(link => link.rel === 'approve');
-
-    console.log('🎉 PayPal order created successfully!', {
-      orderId: orderData.id,
-      status: orderData.status,
-      approvalUrl: approvalLink?.href
+    const captureData = await captureResponse.json() as PayPalCaptureResponse;
+    console.log('🎉 PayPal order captured successfully!', {
+      captureId: captureData.id,
+      status: captureData.status
     });
+
+    // Update transaction status in database if we have Supabase access
+    if (supabaseAdmin && user_id) {
+      console.log('💾 Updating transaction status in database...');
+      const { error: updateError } = await supabaseAdmin
+        .from('transactions')
+        .update({ 
+          status: 'Completed',
+          external_transaction_id: captureData.purchase_units[0]?.payments?.captures[0]?.id
+        })
+        .eq('paypal_order_id', order_id)
+        .eq('user_id', user_id);
+
+      if (updateError) {
+        console.error('⚠️ Failed to update transaction status:', updateError);
+        // Don't fail the capture if DB update fails
+      } else {
+        console.log('✅ Transaction status updated in database');
+      }
+    }
+
+    const captureInfo = captureData.purchase_units[0]?.payments?.captures[0];
 
     return new Response(JSON.stringify({ 
       success: true,
-      orderId: orderData.id,
-      approval_url: approvalLink?.href,
-      status: orderData.status,
-      amount: totalAmount,
-      recipient: recipient_email
+      order_id: order_id,
+      capture_id: captureData.id,
+      status: captureData.status,
+      transaction_id: captureInfo?.id,
+      amount: captureInfo?.amount,
+      capture_status: captureInfo?.status
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
 
   } catch (e) {
-    console.error('💥 Unhandled error creating PayPal order:', e);
+    console.error('💥 Unhandled error capturing PayPal order:', e);
     return new Response(JSON.stringify({ 
-      error: 'Server exception creating PayPal order', 
+      error: 'Server exception capturing PayPal order', 
       details: String(e) 
     }), {
       status: 500,
