@@ -235,40 +235,63 @@ serve(async (req) => {
             throw acctErr;
           }
 
-          // Find existing by plaid_account_id mapping stored in plaid_accounts then join to accounts by (user_id,name,provider,type)
+          // Find existing account by checking both user_id and a unique identifier
+          // First, get the plaid_account record to link to the main accounts table
+          const { data: plaidAccount, error: plaidAcctErr } = await supabaseAdmin
+            .from('plaid_accounts')
+            .select('plaid_account_id')
+            .eq('user_id', userId)
+            .eq('plaid_account_id', a.account_id)
+            .maybeSingle();
+          
+          if (plaidAcctErr) {
+            console.error(`Error finding plaid_account ${a.account_id}:`, plaidAcctErr);
+            throw plaidAcctErr;
+          }
+
+          // Look for existing account in main accounts table using a more specific match
           const { data: existingAccounts, error: listErr } = await supabaseAdmin
             .from('accounts')
-            .select('id,name')
+            .select('id,name,external_id')
             .eq('user_id', userId)
-            .eq('name', mapped.name);
+            .eq('name', mapped.name)
+            .eq('provider', 'Plaid');
+          
           if (listErr) {
             console.error(`Error finding existing account ${mapped.name}:`, listErr);
             throw listErr;
           }
 
-          if (!existingAccounts || existingAccounts.length === 0) {
-            console.log(`Creating new account record for: ${mapped.name}`);
+          // Check if we have an account that matches this specific Plaid account
+          const existingAccount = existingAccounts?.find(acc => 
+            acc.external_id === a.account_id || 
+            (acc.name === mapped.name && !acc.external_id)
+          );
+
+          if (!existingAccount) {
+            console.log(`Creating new account record for user ${userId}: ${mapped.name} (${a.account_id})`);
             const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
               user_id: userId,
               name: mapped.name,
               provider: mapped.provider,
               type: mapped.type,
-              balance: mapped.balance
+              balance: mapped.balance,
+              external_id: a.account_id // Store Plaid account ID for future reference
             });
             if (insertMirrorErr) {
               console.error(`Error inserting new account ${mapped.name}:`, insertMirrorErr);
               throw insertMirrorErr;
             }
           } else {
-            console.log(`Updating existing account record for: ${mapped.name} with balance: ${mapped.balance}`);
-            const existing = existingAccounts[0];
+            console.log(`Updating existing account record for user ${userId}: ${mapped.name} with balance: ${mapped.balance}`);
             const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
               .update({ 
                 balance: mapped.balance,
                 provider: mapped.provider,
-                type: mapped.type
+                type: mapped.type,
+                external_id: a.account_id // Ensure external_id is set
               })
-              .eq('id', existing.id)
+              .eq('id', existingAccount.id)
               .eq('user_id', userId);
             if (updateMirrorErr) {
               console.error(`Error updating account ${mapped.name}:`, updateMirrorErr);

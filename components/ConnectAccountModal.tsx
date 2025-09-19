@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { usePlaidLink } from 'react-plaid-link';
 import Modal from './Modal';
 import { Account } from '../types';
 import { PlaidIcon, RefreshCwIcon, AlertTriangleIcon } from './icons';
 import { getSupabase } from '../services/supabase';
 import type { User } from '@supabase/supabase-js';
-import PlaidLinkIframe from './PlaidLinkIframe';
 
 interface ConnectAccountModalProps {
     isOpen: boolean;
@@ -18,95 +18,6 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [rawError, setRawError] = useState<any>(null);
-    
-    // Clear any Plaid-related browser storage when modal opens for user isolation
-    useEffect(() => {
-        if (isOpen && user) {
-            try {
-                console.log(`Clearing ALL browser storage for user isolation: ${user.id}`);
-                
-                // 1. Clear localStorage
-                const localStorageKeys = [];
-                for (let i = 0; i < localStorage.length; i++) {
-                    const key = localStorage.key(i);
-                    if (key && (
-                        key.toLowerCase().includes('plaid') || 
-                        key.toLowerCase().includes('link') ||
-                        key.toLowerCase().includes('bank') ||
-                        key.toLowerCase().includes('account') ||
-                        key.toLowerCase().includes('token')
-                    )) {
-                        localStorageKeys.push(key);
-                    }
-                }
-                localStorageKeys.forEach(key => {
-                    console.log(`Clearing localStorage: ${key}`);
-                    localStorage.removeItem(key);
-                });
-                
-                // 2. Clear sessionStorage
-                const sessionStorageKeys = [];
-                for (let i = 0; i < sessionStorage.length; i++) {
-                    const key = sessionStorage.key(i);
-                    if (key && (
-                        key.toLowerCase().includes('plaid') || 
-                        key.toLowerCase().includes('link') ||
-                        key.toLowerCase().includes('bank') ||
-                        key.toLowerCase().includes('account') ||
-                        key.toLowerCase().includes('token')
-                    )) {
-                        sessionStorageKeys.push(key);
-                    }
-                }
-                sessionStorageKeys.forEach(key => {
-                    console.log(`Clearing sessionStorage: ${key}`);
-                    sessionStorage.removeItem(key);
-                });
-                
-                // 3. Clear IndexedDB (if accessible)
-                if (typeof indexedDB !== 'undefined') {
-                    try {
-                        indexedDB.databases().then(databases => {
-                            databases.forEach(db => {
-                                if (db.name && db.name.toLowerCase().includes('plaid')) {
-                                    console.log(`Deleting IndexedDB: ${db.name}`);
-                                    indexedDB.deleteDatabase(db.name);
-                                }
-                            });
-                        }).catch(e => console.warn('Could not clear IndexedDB:', e));
-                    } catch (e) {
-                        console.warn('IndexedDB clearing not supported:', e);
-                    }
-                }
-                
-                // 4. Clear cookies more aggressively
-                if (typeof document !== 'undefined') {
-                    const allCookies = document.cookie.split(';');
-                    allCookies.forEach(cookie => {
-                        const eqPos = cookie.indexOf('=');
-                        const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
-                        if (name.toLowerCase().includes('plaid') || 
-                            name.toLowerCase().includes('link') ||
-                            name.toLowerCase().includes('bank')) {
-                            console.log(`Clearing cookie: ${name}`);
-                            // Clear for multiple domains and paths
-                            const domains = ['', '.plaid.com', '.cdn.plaid.com', window.location.hostname];
-                            const paths = ['/', '/link'];
-                            domains.forEach(domain => {
-                                paths.forEach(path => {
-                                    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=${path}; domain=${domain};`;
-                                });
-                            });
-                        }
-                    });
-                }
-                
-                console.log(`✅ Completed comprehensive storage clearing for user: ${user.id}`);
-            } catch (error) {
-                console.warn('Could not clear browser storage:', error);
-            }
-        }
-    }, [isOpen, user]);
     
     // Generic error handler for Supabase function calls
     const handleFunctionError = (err: any, context: 'token creation' | 'token exchange') => {
@@ -243,17 +154,18 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         }
     }, [onConnectionSuccess, onClose]);
     
-    const handlePlaidExit = (err: any, metadata: any) => {
-        if (err != null) {
-            console.log('Plaid Link exited with error:', err);
-        }
-        // Optionally close modal on exit
-        // onClose();
-    };
-    
-    const handlePlaidEvent = (eventName: string, metadata: any) => {
-        console.log('Plaid Link event:', eventName, metadata);
-    };
+    const { open, ready } = usePlaidLink({
+        token: linkToken,
+        onSuccess,
+        onExit: (err, metadata) => {
+            if (err != null) {
+                console.log('Plaid Link exited with error:', err);
+            }
+        },
+        onEvent: (eventName, metadata) => {
+            console.log('Plaid Link event:', eventName, metadata);
+        },
+    });
 
     // Reset state when modal is closed
     useEffect(() => {
@@ -265,9 +177,11 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         }
     }, [isOpen]);
 
+    const connectDisabled = !ready || isLoading || !linkToken || !!error;
+
     return (
         <Modal isOpen={isOpen} onClose={onClose} title="Connect Bank Account">
-            <div className="space-y-4">
+            <div className="space-y-4 text-center">
                 
                 {error && (
                     <div className="p-3 bg-red-900/50 border border-red-500/50 rounded-md flex flex-col space-y-2 text-sm text-left">
@@ -295,33 +209,29 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                     </div>
                 )}
 
-                {isLoading && (
-                    <div className="flex items-center justify-center py-8">
-                        <RefreshCwIcon className="w-6 h-6 animate-spin mr-3"/>
-                        <span>Initializing secure connection...</span>
-                    </div>
-                )}
+                <div className="pt-4">
+                    <button 
+                        onClick={() => open()} 
+                        disabled={connectDisabled}
+                        className="w-full bg-gray-800 hover:bg-gray-700 border border-gray-600 text-white font-bold py-3 px-4 rounded-lg transition-colors flex items-center justify-center space-x-3 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                        {isLoading ? (
+                            <>
+                                <RefreshCwIcon className="w-5 h-5 animate-spin"/>
+                                <span>Initializing...</span>
+                            </>
+                        ) : (
+                             <>
+                                <PlaidIcon className="w-6 h-6"/>
+                                <span>Continue with Plaid</span>
+                            </>
+                        )}
+                    </button>
+                </div>
 
-                {linkToken && user && !isLoading && !error && (
-                    <div className="space-y-4">
-                        <div className="text-center text-sm text-gray-400 mb-4">
-                            <PlaidIcon className="w-8 h-8 mx-auto mb-2"/>
-                            Secure connection ready for user {user.email}
-                        </div>
-                        
-                        <PlaidLinkIframe
-                            linkToken={linkToken}
-                            user={user}
-                            onSuccess={onSuccess}
-                            onExit={handlePlaidExit}
-                            onEvent={handlePlaidEvent}
-                        />
-                        
-                        <p className="text-xs text-gray-500 text-center">
-                            By connecting, you agree to the Plaid <a href="https://plaid.com/legal" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-300">End User Privacy Policy</a>.
-                        </p>
-                    </div>
-                )}
+                <p className="text-xs text-gray-500 pt-2">
+                    By connecting, you agree to the Plaid <a href="https://plaid.com/legal" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-300">End User Privacy Policy</a>.
+                </p>
             </div>
         </Modal>
     );
