@@ -4,18 +4,48 @@ import Modal from './Modal';
 import { Account } from '../types';
 import { PlaidIcon, RefreshCwIcon, AlertTriangleIcon } from './icons';
 import { getSupabase } from '../services/supabase';
+import type { User } from '@supabase/supabase-js';
 
 interface ConnectAccountModalProps {
     isOpen: boolean;
     onClose: () => void;
     onConnectionSuccess: (instantAccounts?: { name: string; balance: number | null; provider: string; type?: string }[]) => void; // optional immediate accounts
+    user: User | null;
 }
 
-const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClose, onConnectionSuccess }) => {
+const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClose, onConnectionSuccess, user }) => {
     const [linkToken, setLinkToken] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [rawError, setRawError] = useState<any>(null);
+    
+    // Clear any Plaid-related browser storage when modal opens for user isolation
+    useEffect(() => {
+        if (isOpen && user) {
+            try {
+                // Clear any Plaid-related storage that might cause cross-user data issues
+                const storageKeys = ['link-result', 'link-account-selecter'];
+                storageKeys.forEach(key => {
+                    localStorage.removeItem(key);
+                    sessionStorage.removeItem(key);
+                });
+                
+                // Clear any cookies related to Plaid (if accessible)
+                if (typeof document !== 'undefined') {
+                    // Clear Plaid-related cookies by setting them to expire
+                    const plaidCookies = ['_plaid_link_session', 'plaid_link'];
+                    plaidCookies.forEach(cookieName => {
+                        document.cookie = `${cookieName}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; domain=.plaid.com;`;
+                        document.cookie = `${cookieName}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+                    });
+                }
+                
+                console.log(`Cleared Plaid browser storage for user isolation: ${user.id}`);
+            } catch (error) {
+                console.warn('Could not clear Plaid browser storage:', error);
+            }
+        }
+    }, [isOpen, user]);
     
     // Generic error handler for Supabase function calls
     const handleFunctionError = (err: any, context: 'token creation' | 'token exchange') => {
@@ -41,15 +71,23 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
 
     // Fetch the link_token from our Supabase Edge Function
     useEffect(() => {
-        if (!isOpen) return;
+        if (!isOpen || !user) return;
 
         const createLinkToken = async () => {
             setIsLoading(true);
             setError(null);
             setRawError(null);
+            setLinkToken(null); // Clear any existing token
+            
             try {
+                console.log(`Creating fresh Plaid link token for user: ${user.id}`);
                 const supabase = getSupabase();
-                const { data, error: funcError } = await supabase.functions.invoke('create-link-token');
+                const { data, error: funcError } = await supabase.functions.invoke('create-link-token', {
+                    body: { 
+                        user_id: user.id, // Explicitly pass user ID
+                        force_refresh: true // Request fresh token
+                    }
+                });
                 if (funcError) throw funcError;
                 if (data && data.needsServerConfig) {
                     throw new Error(data.guidance || 'Server needs configuration for Plaid.');
@@ -57,6 +95,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 if (!data || !data.link_token) {
                     throw new Error("Failed to retrieve a link token from the server.");
                 }
+                console.log(`Successfully created link token for user: ${user.id}`);
                 setLinkToken(data.link_token);
             } catch (err: any) {
                 handleFunctionError(err, 'token creation');
@@ -66,7 +105,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         };
 
         createLinkToken();
-    }, [isOpen]);
+    }, [isOpen, user]);
 
     const onSuccess = useCallback(async (public_token: string) => {
         setIsLoading(true);

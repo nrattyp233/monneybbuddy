@@ -69,6 +69,8 @@ const App: React.FC = () => {
                 if (!newUser || (currentUserId && newUserId && currentUserId !== newUserId)) {
                     const reason = !newUser ? 'User logged out' : 'Different user logged in';
                     console.log(`${reason} - clearing all data (was: ${currentUserId}, now: ${newUserId})`);
+                    
+                    // Clear application state
                     setAccounts([]);
                     setTransactions([]);
                     setLockedSavings([]);
@@ -76,6 +78,45 @@ const App: React.FC = () => {
                     setAccountToRemove(null);
                     setIsClaiming(null);
                     setRefreshError(null);
+                    
+                    // Clear browser storage that might contain user-specific data
+                    try {
+                        // Clear localStorage items that might be user-specific
+                        const keysToRemove = [];
+                        for (let i = 0; i < localStorage.length; i++) {
+                            const key = localStorage.key(i);
+                            if (key && (
+                                key.includes('plaid') || 
+                                key.includes('Plaid') || 
+                                key.includes('bank') || 
+                                key.includes('account') ||
+                                key.includes('moneybuddy')
+                            )) {
+                                keysToRemove.push(key);
+                            }
+                        }
+                        keysToRemove.forEach(key => localStorage.removeItem(key));
+                        
+                        // Clear sessionStorage
+                        const sessionKeysToRemove = [];
+                        for (let i = 0; i < sessionStorage.length; i++) {
+                            const key = sessionStorage.key(i);
+                            if (key && (
+                                key.includes('plaid') || 
+                                key.includes('Plaid') || 
+                                key.includes('bank') || 
+                                key.includes('account') ||
+                                key.includes('moneybuddy')
+                            )) {
+                                sessionKeysToRemove.push(key);
+                            }
+                        }
+                        sessionKeysToRemove.forEach(key => sessionStorage.removeItem(key));
+                        
+                        console.log('Cleared browser storage for user isolation');
+                    } catch (error) {
+                        console.warn('Could not clear browser storage:', error);
+                    }
                 }
             }
         );
@@ -813,9 +854,11 @@ const App: React.FC = () => {
             </Modal>
 
             <ConnectAccountModal 
+                key={user?.id || 'no-user'} // Force re-creation when user changes
                 isOpen={isConnectAccountModalOpen} 
                 onClose={() => setIsConnectAccountModalOpen(false)} 
                 onConnectionSuccess={handleConnectionSuccess}
+                user={user}
             />
 
             <TransactionDetailModal

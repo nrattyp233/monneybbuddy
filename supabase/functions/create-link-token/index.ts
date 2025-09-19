@@ -104,7 +104,7 @@ serve(async (req) => {
     const payload: PlaidLinkTokenCreateRequest = {
       client_id: PLAID_CLIENT_ID,
       secret: PLAID_SECRET,
-      client_name: 'MoneyBuddy',
+      client_name: `MoneyBuddy-${clientUserId.slice(-8)}`, // User-specific client name
       language: 'en',
       country_codes: ['US'],
       user: { client_user_id: clientUserId },
