@@ -83,15 +83,28 @@ function validateOrderInput(body: CreateOrderRequest): { valid: boolean; errors:
     errors.push('Invalid fee amount');
   }
   
-  // Validate email format
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  // Validate email format - stricter validation
+  const emailRegex = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)*$/;
   if (!emailRegex.test(body.recipient_email)) {
     errors.push('Invalid recipient email format');
   }
   
-  // Validate description length
+  // Block known suspicious domains
+  const suspiciousDomains = ['tempmail', 'guerrillamail', 'mailinator', '10minutemail'];
+  const emailDomain = body.recipient_email.split('@')[1]?.toLowerCase();
+  if (suspiciousDomains.some(domain => emailDomain?.includes(domain))) {
+    errors.push('Temporary email addresses are not allowed');
+  }
+  
+  // Validate description length and content
   if (body.description && body.description.length > 200) {
     errors.push('Description must be 200 characters or less');
+  }
+  
+  // Check for potentially malicious content
+  const suspiciousPatterns = [/<script/i, /javascript:/i, /vbscript:/i, /onload=/i, /onerror=/i];
+  if (body.description && suspiciousPatterns.some(pattern => pattern.test(body.description))) {
+    errors.push('Description contains invalid content');
   }
   
   return { valid: errors.length === 0, errors };
@@ -287,12 +300,18 @@ serve(async (req) => {
     }
     const { amount, fee, recipient_email, description } = body;
 
-    console.log('🎯 Creating PayPal order:', { amount, fee, recipient_email, description });
+    console.log('🎯 Creating PayPal order:', { amount, fee, recipient_email: '[REDACTED]', description });
 
     if (!amount || !recipient_email) {
+      await logSecurityEvent('missing_fields', { 
+        userId, 
+        ip: clientIP,
+        missingFields: ['amount', 'recipient_email'].filter(field => !body[field as keyof CreateOrderRequest])
+      });
+      
       return new Response(JSON.stringify({ error: 'Missing required fields: amount, recipient_email' }), {
         status: 400,
-        headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+        headers: { 'Content-Type': 'application/json', ...securityHeaders }
       });
     }
 
@@ -305,7 +324,7 @@ serve(async (req) => {
     const totalAmount = (parseFloat(amount) + parseFloat(fee || '0')).toFixed(2);
     console.log('💰 Total amount to transfer:', totalAmount);
 
-    // Create PayPal order
+    // Create PayPal order with enhanced security
     const orderPayload = {
       intent: 'CAPTURE',
       purchase_units: [{
@@ -328,14 +347,14 @@ serve(async (req) => {
       },
     };
 
-    console.log('📦 PayPal order payload:', JSON.stringify(orderPayload, null, 2));
+    console.log('📦 PayPal order payload prepared');
 
     const orderResponse = await fetch(`${PAYPAL_API_URL}/v2/checkout/orders`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
         'Content-Type': 'application/json',
-        'PayPal-Request-Id': `moneybuddy-${Date.now()}`,
+        'PayPal-Request-Id': `moneybuddy-${userId}-${Date.now()}`,
       },
       body: JSON.stringify(orderPayload),
     });
@@ -345,13 +364,21 @@ serve(async (req) => {
     if (!orderResponse.ok) {
       const errorText = await orderResponse.text();
       console.error('❌ PayPal order creation failed:', errorText);
+      
+      await logSecurityEvent('paypal_order_failed', { 
+        userId, 
+        ip: clientIP,
+        status: orderResponse.status,
+        amount: totalAmount
+      });
+      
       return new Response(JSON.stringify({ 
         error: 'Failed to create PayPal order', 
-        details: errorText,
+        details: 'PayPal service temporarily unavailable',
         status: orderResponse.status 
       }), {
         status: 500,
-        headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+        headers: { 'Content-Type': 'application/json', ...securityHeaders }
       });
     }
 
@@ -361,7 +388,16 @@ serve(async (req) => {
     console.log('🎉 PayPal order created successfully!', {
       orderId: orderData.id,
       status: orderData.status,
-      approvalUrl: approvalLink?.href
+      userId
+    });
+
+    // Log successful order creation for audit
+    await logSecurityEvent('order_created', { 
+      userId, 
+      ip: clientIP,
+      orderId: orderData.id,
+      amount: totalAmount,
+      status: orderData.status
     });
 
     return new Response(JSON.stringify({ 
@@ -370,20 +406,46 @@ serve(async (req) => {
       approval_url: approvalLink?.href,
       status: orderData.status,
       amount: totalAmount,
-      recipient: recipient_email
+      recipient: '[REDACTED]' // Don't return email in response for security
     }), {
       status: 200,
-      headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+      headers: { 'Content-Type': 'application/json', ...securityHeaders }
     });
 
   } catch (e) {
     console.error('💥 Unhandled error creating PayPal order:', e);
+    
+    // Try to get userId if available in scope
+    let errorUserId = 'unknown';
+    try {
+      const authHeader = req.headers.get('authorization');
+      if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
+        const token = authHeader.substring(7);
+        const parts = token.split('.');
+        if (parts.length === 3) {
+          const payloadRaw = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+          const payload = JSON.parse(payloadRaw);
+          if (payload.sub && typeof payload.sub === 'string') {
+            errorUserId = payload.sub;
+          }
+        }
+      }
+    } catch (authError) {
+      // Continue with unknown user
+    }
+    
+    await logSecurityEvent('server_exception', { 
+      userId: errorUserId, 
+      ip: clientIP,
+      error: String(e).substring(0, 200) // Limit error message length
+    });
+    
     return new Response(JSON.stringify({ 
       error: 'Server exception creating PayPal order', 
-      details: String(e) 
+      details: 'Internal server error occurred'
     }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+      headers: { 'Content-Type': 'application/json', ...securityHeaders }
     });
   }
 });

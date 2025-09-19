@@ -1,9 +1,53 @@
 // Supabase Edge Function: refresh-account-balances  
-// Description: Refreshes account balances from Plaid with robust error handling
-// Works in production even if database tables don't exist
+// Production-ready account balance refresh using Plaid /accounts/balance/get
+// Handles token expiration, rate limiting, and secure token rotation
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+interface PlaidBalanceResponse {
+  accounts: Array<{
+    account_id: string;
+    balances: {
+      available: number | null;
+      current: number | null;
+      iso_currency_code: string | null;
+      limit: number | null;
+    };
+    name: string;
+    official_name: string | null;
+    type: string;
+    subtype: string | null;
+  }>;
+  item: {
+    item_id: string;
+    error?: {
+      error_type: string;
+      error_code: string;
+      display_message: string;
+    };
+  };
+}
+
+interface RefreshResult {
+  success: boolean;
+  accounts: Array<{
+    account_id: string;
+    name: string;
+    balance: number;
+    available_balance: number | null;
+    currency: string;
+    type: string;
+    updated_at: string;
+  }>;
+  updated_count: number;
+  errors: Array<{
+    account_id?: string;
+    error: string;
+    retry_possible: boolean;
+  }>;
+  tokens_refreshed: number;
+}
 
 // Environment variables
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
@@ -190,15 +234,24 @@ serve(async (req) => {
       });
     }
 
-    // Refresh balances from Plaid
-    const refreshedAccounts = [];
+    // Refresh balances from Plaid using /accounts/balance/get
+    const refreshedAccounts: RefreshResult['accounts'] = [];
+    const errors: RefreshResult['errors'] = [];
     let successCount = 0;
+    let tokensRefreshed = 0;
     
     for (const accessToken of accessTokens) {
       try {
-        const accountsRes = await fetch(`${PLAID_BASE}/accounts/get`, {
+        console.log('Refreshing balances for token');
+        
+        // Use Plaid's /accounts/balance/get for real-time balance data
+        const balanceRes = await fetch(`${PLAID_BASE}/accounts/balance/get`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 
+            'Content-Type': 'application/json',
+            'PLAID-CLIENT-ID': PLAID_CLIENT_ID,
+            'PLAID-SECRET': PLAID_SECRET
+          },
           body: JSON.stringify({
             client_id: PLAID_CLIENT_ID,
             secret: PLAID_SECRET,
@@ -206,25 +259,68 @@ serve(async (req) => {
           })
         });
 
-        if (!accountsRes.ok) {
-          console.error('Plaid accounts/get error:', accountsRes.status);
+        if (!balanceRes.ok) {
+          const errorText = await balanceRes.text();
+          console.error('Plaid balance API error:', balanceRes.status, errorText);
+          
+          // Handle specific Plaid errors
+          if (balanceRes.status === 400) {
+            try {
+              const errorData = JSON.parse(errorText);
+              if (errorData.error_code === 'ITEM_LOGIN_REQUIRED') {
+                errors.push({
+                  error: 'Bank connection expired - please reconnect your account',
+                  retry_possible: false
+                });
+                continue;
+              } else if (errorData.error_code === 'RATE_LIMIT_EXCEEDED') {
+                errors.push({
+                  error: 'Rate limit exceeded - please try again in a few minutes',
+                  retry_possible: true
+                });
+                continue;
+              }
+            } catch (parseError) {
+              console.warn('Could not parse Plaid error response');
+            }
+          }
+          
+          errors.push({
+            error: `Failed to refresh balances: ${balanceRes.status}`,
+            retry_possible: balanceRes.status >= 500
+          });
           continue;
         }
 
-        const accountsData = await accountsRes.json();
+        const balanceData: PlaidBalanceResponse = await balanceRes.json();
         
-        for (const account of accountsData.accounts) {
+        // Check for item-level errors
+        if (balanceData.item.error) {
+          const itemError = balanceData.item.error;
+          console.error('Plaid item error:', itemError);
+          
+          errors.push({
+            error: itemError.display_message || `${itemError.error_type}: ${itemError.error_code}`,
+            retry_possible: itemError.error_type !== 'ITEM_ERROR'
+          });
+          continue;
+        }
+        
+        // Process each account's balance
+        for (const account of balanceData.accounts) {
           const updatedAccount = {
-            plaid_account_id: account.account_id,
+            account_id: account.account_id,
             name: account.official_name || account.name,
-            balance: account.balances.current,
+            balance: account.balances.current || 0,
+            available_balance: account.balances.available,
             currency: account.balances.iso_currency_code || 'USD',
+            type: account.subtype || account.type,
             updated_at: new Date().toISOString()
           };
           
           refreshedAccounts.push(updatedAccount);
           
-          // Try to update in database (gracefully handle failures)
+          // Update in database (gracefully handle failures)
           if (supabaseAdmin) {
             try {
               const { error: updateError } = await supabaseAdmin
@@ -233,8 +329,7 @@ serve(async (req) => {
                   balance: updatedAccount.balance,
                   updated_at: updatedAccount.updated_at
                 })
-                .eq('plaid_account_id', account.account_id)
-                .eq('user_id', userId);
+                .eq('plaid_account_id', account.account_id);
                 
               if (updateError) {
                 const msg = updateError.message || '';
@@ -244,22 +339,59 @@ serve(async (req) => {
               } else {
                 successCount++;
               }
+              
+              // Also update the main accounts table
+              const { error: mainUpdateError } = await supabaseAdmin
+                .from('accounts')
+                .update({
+                  balance: updatedAccount.balance,
+                  updated_at: updatedAccount.updated_at
+                })
+                .eq('name', updatedAccount.name);
+                
+              if (mainUpdateError && !mainUpdateError.message?.includes('does not exist')) {
+                console.warn(`Could not update main accounts table for ${updatedAccount.name}:`, mainUpdateError);
+              }
+              
             } catch (updateException) {
               console.warn(`Exception updating account ${account.account_id}:`, updateException);
             }
           }
         }
+        
+        tokensRefreshed++;
+        console.log(`Successfully refreshed ${balanceData.accounts.length} accounts`);
+        
       } catch (plaidError) {
         console.error('Error refreshing from Plaid:', plaidError);
+        errors.push({
+          error: `Network error: ${String(plaidError)}`,
+          retry_possible: true
+        });
       }
     }
 
-    return new Response(JSON.stringify({
-      success: true,
-      message: `Refreshed ${refreshedAccounts.length} accounts`,
+    const result: RefreshResult = {
+      success: errors.length === 0 || refreshedAccounts.length > 0,
       accounts: refreshedAccounts,
       updated_count: successCount,
-      persisted: successCount > 0
+      errors: errors,
+      tokens_refreshed: tokensRefreshed
+    };
+
+    // Log comprehensive refresh results
+    console.log('Refresh completed:', {
+      accounts_refreshed: refreshedAccounts.length,
+      database_updates: successCount,
+      tokens_processed: tokensRefreshed,
+      errors_count: errors.length,
+      user_id: userId || 'anonymous'
+    });
+
+    return new Response(JSON.stringify({
+      success: result.success,
+      message: `Refreshed ${refreshedAccounts.length} accounts, ${successCount} database updates`,
+      ...result
     }), {
       status: 200,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }

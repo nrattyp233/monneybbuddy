@@ -100,6 +100,48 @@ serve(async (req) => {
     console.log('🔑 Getting PayPal access token for capture...');
     const accessToken = await getPayPalAccessToken();
 
+    // First, verify the order exists and is valid
+    console.log('🔍 Verifying PayPal order before capture...');
+    const verifyResponse = await fetch(`${PAYPAL_API_URL}/v2/checkout/orders/${order_id}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!verifyResponse.ok) {
+      const errorText = await verifyResponse.text();
+      console.error('❌ PayPal order verification failed:', errorText);
+      return new Response(JSON.stringify({ 
+        error: 'PayPal order not found or invalid', 
+        details: errorText,
+        status: verifyResponse.status
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+      });
+    }
+
+    const orderData = await verifyResponse.json();
+    console.log('✅ PayPal order verified:', {
+      id: orderData.id,
+      status: orderData.status,
+      intent: orderData.intent
+    });
+
+    // Check if order is in the correct status for capture
+    if (orderData.status !== 'APPROVED') {
+      console.error('❌ PayPal order not approved for capture:', orderData.status);
+      return new Response(JSON.stringify({ 
+        error: 'PayPal order not approved for capture',
+        order_status: orderData.status
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+      });
+    }
+
     // Capture the PayPal order
     console.log('💰 Capturing PayPal order...');
     const captureResponse = await fetch(`${PAYPAL_API_URL}/v2/checkout/orders/${order_id}/capture`, {

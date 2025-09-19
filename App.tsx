@@ -17,6 +17,7 @@ import TransactionDetailModal from './components/TransactionDetailModal';
 import Auth from './components/Auth';
 import { getSupabase } from './services/supabase';
 import DeveloperSettings from './components/DeveloperSettings';
+import { accountRefreshService, type RefreshState } from './services/accountRefreshService';
 
 type ActiveTab = 'send' | 'lock' | 'history' | 'request';
 
@@ -40,8 +41,52 @@ const App: React.FC = () => {
     const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
     const [accountToRemove, setAccountToRemove] = useState<Account | null>(null);
     const [isClaiming, setIsClaiming] = useState<string | null>(null); // Track claiming state by transaction ID
+    const [refreshState, setRefreshState] = useState<RefreshState>(accountRefreshService.getState());
 
     const isAdmin = user?.email === ADMIN_EMAIL;
+
+    // Subscribe to refresh service state changes
+    useEffect(() => {
+        const unsubscribe = accountRefreshService.subscribe(setRefreshState);
+        return unsubscribe;
+    }, []);
+
+    // Production-ready account refresh handler
+    const handleRefreshAccounts = useCallback(async () => {
+        if (!user) return;
+        
+        try {
+            const result = await accountRefreshService.refreshAccounts();
+            if (result && result.success) {
+                // Update local accounts with refreshed data
+                if (result.accounts && result.accounts.length > 0) {
+                    const updatedAccounts = accounts.map(account => {
+                        const refreshedAccount = result.accounts.find(ra => 
+                            ra.name === account.name || ra.account_id === account.id
+                        );
+                        if (refreshedAccount) {
+                            return {
+                                ...account,
+                                balance: refreshedAccount.balance,
+                                updatedAt: refreshedAccount.updated_at
+                            };
+                        }
+                        return account;
+                    });
+                    setAccounts(updatedAccounts);
+                }
+                
+                // Show success message
+                console.log('Accounts refreshed successfully:', {
+                    updated: result.updated_count,
+                    total: result.accounts.length
+                });
+            }
+        } catch (error) {
+            console.error('Refresh failed:', error);
+            // Error is already handled by the service and shown in UI
+        }
+    }, [user, accounts]);
 
     useEffect(() => {
         const supabase = getSupabase();
@@ -570,6 +615,8 @@ const App: React.FC = () => {
                         const acc = accounts.find(a => a.id === accountId);
                         if (acc) setAccountToRemove(acc);
                     }}
+                    onRefreshAccounts={handleRefreshAccounts}
+                    refreshState={refreshState}
                 />
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 p-2 bg-black/20 rounded-xl">

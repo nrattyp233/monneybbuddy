@@ -2,10 +2,19 @@ import React from 'react';
 import { Account } from '../types';
 import { PlusCircleIcon, BankIcon, StripeIcon, PayPalIcon, ChaseIcon, BankOfAmericaIcon, WellsFargoIcon, CapitalOneIcon, TrashIcon } from './icons';
 
+interface RefreshState {
+  isLoading: boolean;
+  lastRefresh: number | null;
+  error: string | null;
+  retryCount: number;
+}
+
 interface BalanceSummaryProps {
   accounts: Account[];
   onConnectClick: () => void;
   onRemoveAccount: (accountId: string) => void;
+  onRefreshAccounts?: () => void;
+  refreshState?: RefreshState;
 }
 
 const getLogoForProvider = (provider: string) => {
@@ -20,7 +29,13 @@ const getLogoForProvider = (provider: string) => {
     }
 };
 
-const BalanceSummary: React.FC<BalanceSummaryProps> = ({ accounts, onConnectClick, onRemoveAccount }) => {
+const BalanceSummary: React.FC<BalanceSummaryProps> = ({ 
+  accounts, 
+  onConnectClick, 
+  onRemoveAccount, 
+  onRefreshAccounts,
+  refreshState 
+}) => {
   const totalBalance = accounts.reduce((sum, account) => sum + (account.balance || 0), 0);
 
   const formatCurrency = (amount: number | null) => {
@@ -31,9 +46,65 @@ const BalanceSummary: React.FC<BalanceSummaryProps> = ({ accounts, onConnectClic
     }).format(amount);
   };
 
+  const getTimeAgo = (timestamp: number | null) => {
+    if (!timestamp) return null;
+    const seconds = Math.floor((Date.now() - timestamp) / 1000);
+    if (seconds < 60) return 'just now';
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+    if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+    return `${Math.floor(seconds / 86400)}d ago`;
+  };
+
   return (
     <div className="p-4 md:p-6 bg-indigo-900/60 backdrop-blur-lg border border-indigo-400/30 rounded-2xl shadow-xl">
-      <h2 className="text-lg font-semibold text-indigo-200 mb-4">Total Balance</h2>
+      <div className="flex justify-between items-center mb-4">
+        <h2 className="text-lg font-semibold text-indigo-200">Total Balance</h2>
+        
+        {/* Refresh Button */}
+        {onRefreshAccounts && (
+          <div className="flex items-center space-x-2">
+            {refreshState?.lastRefresh && (
+              <span className="text-xs text-indigo-300">
+                {getTimeAgo(refreshState.lastRefresh)}
+              </span>
+            )}
+            <button
+              onClick={onRefreshAccounts}
+              disabled={refreshState?.isLoading}
+              className={`p-2 rounded-lg transition-all duration-200 ${
+                refreshState?.isLoading
+                  ? 'bg-indigo-700/50 cursor-not-allowed'
+                  : 'bg-indigo-700 hover:bg-indigo-600 hover:scale-105'
+              }`}
+              title={refreshState?.isLoading ? 'Refreshing...' : 'Refresh balances'}
+            >
+              <svg
+                className={`w-4 h-4 text-indigo-200 ${
+                  refreshState?.isLoading ? 'animate-spin' : ''
+                }`}
+                fill="none"
+                stroke="currentColor"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  strokeWidth={2}
+                  d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"
+                />
+              </svg>
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Error Display */}
+      {refreshState?.error && (
+        <div className="mb-4 p-3 bg-red-900/30 border border-red-500/50 rounded-lg">
+          <p className="text-sm text-red-300">{refreshState.error}</p>
+        </div>
+      )}
+
       <p className="text-4xl lg:text-5xl font-bold text-lime-300 tracking-tighter mb-6">
         {formatCurrency(totalBalance)}
       </p>
