@@ -183,21 +183,25 @@ serve(async (req) => {
           
           console.log(`💰 Updating ${accountName}: $${currentBalance}`);
 
-          // Update plaid_accounts table
-          const { error: plaidUpdateError } = await supabaseAdmin
-            .from('plaid_accounts')
-            .update({ 
-              balance: currentBalance,
-              raw: plaidAccount,
-              updated_at: new Date().toISOString()
-            })
-            .eq('plaid_account_id', plaidAccount.account_id)
-            .eq('user_id', userId);
+          // Update plaid_accounts table if it exists
+          try {
+            const { error: plaidUpdateError } = await supabaseAdmin
+              .from('plaid_accounts')
+              .update({ 
+                balance: currentBalance,
+                raw: plaidAccount,
+                updated_at: new Date().toISOString()
+              })
+              .eq('plaid_account_id', plaidAccount.account_id)
+              .eq('user_id', userId);
 
-          if (plaidUpdateError) {
-            console.error(`Error updating plaid_account ${accountName}:`, plaidUpdateError);
-            errors.push(`Failed to update plaid_account ${accountName}: ${plaidUpdateError.message}`);
-            continue;
+            if (plaidUpdateError) {
+              console.warn(`plaid_accounts table update failed for ${accountName}:`, plaidUpdateError.message);
+              // Continue anyway, this is not critical
+            }
+          } catch (error) {
+            console.warn(`plaid_accounts table access failed for ${accountName}:`, error);
+            // Continue anyway, focus on updating main accounts table
           }
 
           // Update main accounts table
