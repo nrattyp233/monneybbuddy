@@ -342,48 +342,82 @@ serve(async (req) => {
         }
 
         const accountsData = await accountsRes.json() as PlaidAccountsGetResponse;
-        console.log(`📊 Retrieved ${accountsData.accounts.length} accounts from Plaid`);
+        console.log(`📊 Retrieved ${accountsData.accounts.length} accounts from Plaid for item ${item.item_id}`);
 
-        // Update each account balance
+        // Update each account balance with transaction-like updates
         for (const plaidAccount of accountsData.accounts) {
           const currentBalance = plaidAccount.balances.current;
+          const availableBalance = plaidAccount.balances.available;
           const accountName = plaidAccount.official_name || plaidAccount.name;
+          const currency = plaidAccount.balances.iso_currency_code || 'USD';
           
-          console.log(`💰 Updating ${accountName}: $${currentBalance}`);
+          console.log(`💰 Updating ${accountName}: current=$${currentBalance}, available=$${availableBalance}`);
 
-          // Update plaid_accounts table if it exists
           try {
+            // Update plaid_accounts table if it exists (with comprehensive data)
             const { error: plaidUpdateError } = await supabaseAdmin
               .from('plaid_accounts')
               .update({ 
                 balance: currentBalance,
-                raw: plaidAccount,
+                currency: currency,
+                raw: {
+                  ...plaidAccount,
+                  last_refresh: new Date().toISOString(),
+                  refresh_method: 'accounts/balance/get'
+                },
                 updated_at: new Date().toISOString()
               })
               .eq('plaid_account_id', plaidAccount.account_id)
               .eq('user_id', userId);
 
             if (plaidUpdateError) {
-              console.warn(`plaid_accounts table update failed for ${accountName}:`, plaidUpdateError.message);
-              // Continue anyway, this is not critical
+              console.warn(`⚠️ plaid_accounts table update failed for ${accountName}:`, plaidUpdateError.message);
+            } else {
+              console.log(`✅ Updated plaid_accounts table for ${accountName}`);
             }
           } catch (error) {
-            console.warn(`plaid_accounts table access failed for ${accountName}:`, error);
-            // Continue anyway, focus on updating main accounts table
+            console.warn(`⚠️ plaid_accounts table access failed for ${accountName}:`, error);
           }
 
-          // Update main accounts table
-          const { error: accountUpdateError } = await supabaseAdmin
+          // Update main accounts table (critical path)
+          const { error: accountUpdateError, count } = await supabaseAdmin
             .from('accounts')
-            .update({ balance: currentBalance })
+            .update({ 
+              balance: currentBalance,
+              updated_at: new Date().toISOString()
+            })
             .eq('user_id', userId)
             .eq('name', accountName)
             .eq('provider', 'Plaid');
 
           if (accountUpdateError) {
-            console.error(`Error updating account ${accountName}:`, accountUpdateError);
+            console.error(`❌ Error updating account ${accountName}:`, accountUpdateError);
             errors.push(`Failed to update account ${accountName}: ${accountUpdateError.message}`);
             continue;
+          }
+
+          if (count === 0) {
+            console.warn(`⚠️ No accounts updated for ${accountName} - account may not exist in accounts table`);
+            // Create account if it doesn't exist
+            const { error: insertError } = await supabaseAdmin
+              .from('accounts')
+              .insert({
+                user_id: userId,
+                name: accountName,
+                provider: 'Plaid',
+                type: plaidAccount.type,
+                balance: currentBalance,
+                created_at: new Date().toISOString(),
+                updated_at: new Date().toISOString()
+              });
+            
+            if (insertError) {
+              console.error(`❌ Failed to create account ${accountName}:`, insertError);
+              errors.push(`Failed to create account ${accountName}: ${insertError.message}`);
+              continue;
+            }
+            
+            console.log(`✅ Created new account ${accountName} with balance $${currentBalance}`);
           }
 
           totalUpdated++;
