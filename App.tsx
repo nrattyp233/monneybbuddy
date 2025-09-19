@@ -395,9 +395,10 @@ const App: React.FC = () => {
             });
 
             if (createTxError || (createTxData && createTxData.success === false)) {
-                const details = createTxError?.message || createTxData?.details || 'Unknown error';
-                console.error('❌ Failed to create transaction record:', details);
-                throw new Error(details);
+                const details = createTxError?.message || createTxData?.details || createTxData?.error || 'Unknown error';
+                console.error('❌ Failed to create transaction record:', createTxError, createTxData);
+                console.error('❌ Full error details:', JSON.stringify({createTxError, createTxData}, null, 2));
+                throw new Error(`Transaction creation failed: ${JSON.stringify(details)}`);
             }
 
             console.log('✅ Pending bank transfer created successfully');
@@ -511,8 +512,10 @@ const App: React.FC = () => {
                 }
             });
             if (error || (data && data.success === false)) {
-                const details = error?.message || data?.details || 'Unknown error';
-                throw new Error(details);
+                const details = error?.message || data?.details || data?.error || 'Unknown error';
+                console.error('❌ Failed to create request transaction:', error, data);
+                console.error('❌ Full error details:', JSON.stringify({error, data}, null, 2));
+                throw new Error(`Request creation failed: ${JSON.stringify(details)}`);
             }
             await fetchData();
             setActiveTab('history');
