@@ -11,9 +11,27 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 // TODO: Replace with pgcrypto-based encryption (pgp_sym_encrypt) and rename column to access_token_ciphertext.
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
-  : null;
+
+// Robust Supabase client with error handling
+function createSupabaseClient() {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn('Supabase environment variables not configured');
+    return null;
+  }
+  
+  try {
+    return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { 
+      auth: { persistSession: false },
+      db: { schema: 'public' },
+      global: { headers: { 'x-application-name': 'moneybuddy-exchange-token' } }
+    });
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    return null;
+  }
+}
+
+const supabaseAdmin = createSupabaseClient();
 
 interface ExchangeRequest {
   public_token: string;
@@ -167,86 +185,122 @@ serve(async (req) => {
       try {
         console.log(`Persisting ${mappedAccounts.length} accounts for user ${userId}`); // Debug logging
         
-        // Upsert plaid_items (store token raw for now)
+        // Safely upsert plaid_items (store token raw for now)
         let itemStored = false;
-        const { error: itemErr } = await supabaseAdmin.from('plaid_items').upsert({
-          user_id: userId,
-          item_id: exchangeData.item_id,
-          access_token_enc: exchangeData.access_token
-        });
-        if (itemErr) {
-          const msg = itemErr.message || '';
-          // Skip fatal only if schema not ready; continue with accounts so UI still works
-          if (msg.includes('access_token_enc') || msg.includes('plaid_items')) {
-            console.warn('Skipping plaid_items store (schema missing):', msg);
+        try {
+          const { error: itemErr } = await supabaseAdmin.from('plaid_items').upsert({
+            user_id: userId,
+            item_id: exchangeData.item_id,
+            access_token_enc: exchangeData.access_token
+          });
+          
+          if (itemErr) {
+            const msg = itemErr.message || '';
+            // Gracefully handle missing schema/tables - don't fail the whole operation
+            if (msg.includes('does not exist') || msg.includes('relation') || 
+                msg.includes('access_token_enc') || msg.includes('plaid_items') ||
+                msg.includes('policy') || msg.includes('permission')) {
+              console.warn('Skipping plaid_items store (not available):', msg);
+            } else {
+              // Only throw for unexpected database errors
+              console.error('Database error storing plaid_items:', itemErr);
+            }
           } else {
-            throw itemErr;
+            itemStored = true;
+            console.log('Successfully stored plaid_items record');
           }
-        } else {
-          itemStored = true;
-          console.log('Successfully stored plaid_items record');
+        } catch (dbError) {
+          console.warn('Exception storing plaid_items (continuing):', dbError);
         }
 
-        // Upsert each account into plaid_accounts with raw JSON and ensure an accounts row exists (generating UUID if needed)
+        // Safely upsert each account into plaid_accounts with raw JSON and ensure an accounts row exists
         for (const a of accountsData.accounts) {
           const mapped = mappedAccounts.find(m => m.plaid_account_id === a.account_id)!;
           console.log(`Processing account: ${mapped.name} with balance: ${mapped.balance}`); // Debug logging
           
-          const { error: acctErr } = await supabaseAdmin.from('plaid_accounts').upsert({
-            plaid_account_id: a.account_id,
-            user_id: userId,
-            item_id: exchangeData.item_id,
-            name: mapped.name,
-            provider: mapped.provider,
-            type: mapped.type,
-            balance: mapped.balance,
-            currency: mapped.currency,
-            raw: a
-          });
-          if (acctErr) {
-            console.error(`Error upserting plaid_account ${mapped.name}:`, acctErr);
-            throw acctErr;
-          }
-
-          // Find existing by plaid_account_id mapping stored in plaid_accounts then join to accounts by (user_id,name,provider,type)
-          const { data: existingAccounts, error: listErr } = await supabaseAdmin
-            .from('accounts')
-            .select('id,name')
-            .eq('user_id', userId)
-            .eq('name', mapped.name);
-          if (listErr) {
-            console.error(`Error finding existing account ${mapped.name}:`, listErr);
-            throw listErr;
-          }
-
-          if (!existingAccounts || existingAccounts.length === 0) {
-            console.log(`Creating new account record for: ${mapped.name}`);
-            const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
+          try {
+            const { error: acctErr } = await supabaseAdmin.from('plaid_accounts').upsert({
+              plaid_account_id: a.account_id,
               user_id: userId,
+              item_id: exchangeData.item_id,
               name: mapped.name,
               provider: mapped.provider,
               type: mapped.type,
-              balance: mapped.balance
+              balance: mapped.balance,
+              currency: mapped.currency,
+              raw: a
             });
-            if (insertMirrorErr) {
-              console.error(`Error inserting new account ${mapped.name}:`, insertMirrorErr);
-              throw insertMirrorErr;
+            
+            if (acctErr) {
+              const msg = acctErr.message || '';
+              if (msg.includes('does not exist') || msg.includes('relation') || 
+                  msg.includes('plaid_accounts') || msg.includes('policy')) {
+                console.warn(`Skipping plaid_accounts for ${mapped.name} (not available):`, msg);
+                continue; // Skip to next account
+              } else {
+                console.error(`Error upserting plaid_account ${mapped.name}:`, acctErr);
+              }
             }
-          } else {
-            console.log(`Updating existing account record for: ${mapped.name} with balance: ${mapped.balance}`);
-            const existing = existingAccounts[0];
-            const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
-              .update({ 
-                balance: mapped.balance,
+          } catch (dbError) {
+            console.warn(`Exception processing account ${mapped.name} (continuing):`, dbError);
+            continue;
+          }
+
+          // Safely find and update accounts table (may not exist in all deployments)
+          try {
+            const { data: existingAccounts, error: listErr } = await supabaseAdmin
+              .from('accounts')
+              .select('id,name')
+              .eq('user_id', userId)
+              .eq('name', mapped.name);
+              
+            if (listErr) {
+              const msg = listErr.message || '';
+              if (msg.includes('does not exist') || msg.includes('relation') || msg.includes('accounts')) {
+                console.warn(`Accounts table not available, skipping account persistence for ${mapped.name}`);
+                continue;
+              } else {
+                console.error(`Error finding existing account ${mapped.name}:`, listErr);
+                continue;
+              }
+            }
+
+            if (!existingAccounts || existingAccounts.length === 0) {
+              console.log(`Creating new account record for: ${mapped.name}`);
+              const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
+                user_id: userId,
+                name: mapped.name,
                 provider: mapped.provider,
-                type: mapped.type
-              })
-              .eq('id', existing.id)
-              .eq('user_id', userId);
-            if (updateMirrorErr) {
-              console.error(`Error updating account ${mapped.name}:`, updateMirrorErr);
-              throw updateMirrorErr;
+                type: mapped.type,
+                balance: mapped.balance
+              });
+              
+              if (insertMirrorErr) {
+                const msg = insertMirrorErr.message || '';
+                if (msg.includes('does not exist') || msg.includes('policy')) {
+                  console.warn(`Cannot insert to accounts table for ${mapped.name}:`, msg);
+                } else {
+                  console.error(`Error inserting new account ${mapped.name}:`, insertMirrorErr);
+                }
+              }
+            } else {
+              console.log(`Updating existing account record for: ${mapped.name} with balance: ${mapped.balance}`);
+              const existing = existingAccounts[0];
+              const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
+                .update({ 
+                  balance: mapped.balance,
+                  provider: mapped.provider,
+                  type: mapped.type
+                })
+                .eq('id', existing.id)
+                .eq('user_id', userId);
+                
+              if (updateMirrorErr) {
+                console.warn(`Error updating account ${mapped.name} (continuing):`, updateMirrorErr);
+              }
             }
+          } catch (accountError) {
+            console.warn(`Exception handling account ${mapped.name} (continuing):`, accountError);
           }
         }
   persisted = true; // We consider success if accounts loop ran

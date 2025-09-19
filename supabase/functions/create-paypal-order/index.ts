@@ -49,9 +49,23 @@ const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWE
   ? RAW_ALLOWED_ORIGIN.slice(0, -1) 
   : RAW_ALLOWED_ORIGIN;
 
-const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
-  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
-  : null;
+const supabaseAdmin = (() => {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
+    console.warn('Supabase environment variables not configured');
+    return null;
+  }
+  
+  try {
+    return createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { 
+      auth: { persistSession: false },
+      db: { schema: 'public' },
+      global: { headers: { 'x-application-name': 'moneybuddy-paypal-order' } }
+    });
+  } catch (error) {
+    console.error('Failed to initialize Supabase client:', error);
+    return null;
+  }
+})();
 
 // Security validation functions
 function validateOrderInput(body: CreateOrderRequest): { valid: boolean; errors: string[] } {
@@ -103,18 +117,33 @@ function checkRateLimit(userId: string): { allowed: boolean; resetTime?: number 
 }
 
 async function logSecurityEvent(event: string, details: any, userId?: string) {
-  if (supabaseAdmin) {
-    try {
-      await supabaseAdmin.from('security_logs').insert({
-        event_type: event,
-        details: JSON.stringify(details),
-        user_id: userId,
-        timestamp: new Date().toISOString(),
-        ip_address: details.ip || 'unknown'
-      });
-    } catch (error) {
-      console.error('Failed to log security event:', error);
+  if (!supabaseAdmin) {
+    console.log(`Security event (no DB): ${event}`, JSON.stringify(details));
+    return;
+  }
+  
+  try {
+    const { error } = await supabaseAdmin.from('security_logs').insert({
+      event_type: event,
+      details: JSON.stringify(details),
+      user_id: userId,
+      timestamp: new Date().toISOString(),
+      ip_address: details.ip || 'unknown'
+    });
+    
+    if (error) {
+      const msg = error.message || '';
+      // Don't fail operation if security_logs table doesn't exist
+      if (msg.includes('does not exist') || msg.includes('relation') || 
+          msg.includes('security_logs') || msg.includes('policy')) {
+        console.log(`Security event (table unavailable): ${event}`, JSON.stringify(details));
+      } else {
+        console.error('Failed to log security event (continuing):', error);
+      }
     }
+  } catch (error) {
+    console.log(`Security event (exception): ${event}`, JSON.stringify(details));
+    console.error('Security logging exception (continuing):', error);
   }
 }
 
