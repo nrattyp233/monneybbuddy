@@ -394,11 +394,22 @@ const App: React.FC = () => {
                 }
             });
 
-            if (createTxError || (createTxData && createTxData.success === false)) {
-                const details = createTxError?.message || createTxData?.details || createTxData?.error || 'Unknown error';
-                console.error('❌ Failed to create transaction record:', createTxError, createTxData);
-                console.error('❌ Full error details:', JSON.stringify({createTxError, createTxData}, null, 2));
-                throw new Error(`Transaction creation failed: ${JSON.stringify(details)}`);
+            console.log('Create transaction response:', { createTxData, createTxError });
+
+            if (createTxError) {
+                console.error('❌ Function invocation error:', createTxError);
+                throw new Error(`Function error: ${createTxError.message || JSON.stringify(createTxError)}`);
+            }
+
+            if (createTxData && createTxData.success === false) {
+                console.error('❌ Function returned error:', createTxData);
+                const errorMsg = createTxData.error || createTxData.details || 'Unknown function error';
+                throw new Error(`Transaction creation failed: ${JSON.stringify(errorMsg)}`);
+            }
+
+            if (!createTxData || !createTxData.success) {
+                console.error('❌ Unexpected response format:', createTxData);
+                throw new Error(`Unexpected response: ${JSON.stringify(createTxData)}`);
             }
 
             console.log('✅ Pending bank transfer created successfully');
@@ -511,11 +522,23 @@ const App: React.FC = () => {
                     kind: 'request'
                 }
             });
-            if (error || (data && data.success === false)) {
-                const details = error?.message || data?.details || data?.error || 'Unknown error';
-                console.error('❌ Failed to create request transaction:', error, data);
-                console.error('❌ Full error details:', JSON.stringify({error, data}, null, 2));
-                throw new Error(`Request creation failed: ${JSON.stringify(details)}`);
+
+            console.log('Create request response:', { data, error });
+
+            if (error) {
+                console.error('❌ Function invocation error:', error);
+                throw new Error(`Function error: ${error.message || JSON.stringify(error)}`);
+            }
+
+            if (data && data.success === false) {
+                console.error('❌ Function returned error:', data);
+                const errorMsg = data.error || data.details || 'Unknown function error';
+                throw new Error(`Request creation failed: ${JSON.stringify(errorMsg)}`);
+            }
+
+            if (!data || !data.success) {
+                console.error('❌ Unexpected response format:', data);
+                throw new Error(`Unexpected response: ${JSON.stringify(data)}`);
             }
             await fetchData();
             setActiveTab('history');
