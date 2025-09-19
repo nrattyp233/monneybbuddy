@@ -360,9 +360,22 @@ const App: React.FC = () => {
         const supabase = getSupabase();
     
         try {
-            // --- ALL TRANSFERS ARE NOW BANK-TO-BANK PENDING TRANSFERS ---
-            console.log('🚀 Creating bank-to-bank transfer...', { fromAccount: fromAccount.name, to, amount, fee, description, geoFence, timeRestriction });
+            // NEW SYSTEM: Create pending bank-to-bank transfer
+            console.log('🏦 Creating bank-to-bank transfer...', { 
+                fromAccount: fromAccount.name, 
+                amount, 
+                fee, 
+                to, 
+                description, 
+                geoFence, 
+                timeRestriction 
+            });
             
+            // Check if sender has sufficient balance
+            if (fromAccount.balance === null || fromAccount.balance < totalDebit) {
+                throw new Error("Insufficient funds to cover the amount and transaction fee.");
+            }
+
             // Create pending transaction record - recipient will choose destination account
             const { error: insertError } = await supabase.from('transactions').insert({
                 user_id: user.id,
@@ -375,7 +388,7 @@ const App: React.FC = () => {
                 description: description,
                 type: 'send',
                 status: 'Pending',
-                transfer_method: 'bank_transfer',
+                payment_method: 'bank_transfer',
                 geo_fence: geoFence,
                 time_restriction: timeRestriction
             });
@@ -385,57 +398,102 @@ const App: React.FC = () => {
                 throw insertError;
             }
 
-            console.log('✅ Pending transfer created successfully');
-            alert(`💰 Transfer request sent to ${to}! They will receive a notification to accept the transfer and choose their destination account.`);
+            console.log('✅ Pending bank transfer created successfully');
             await fetchData(); // Refresh to show pending transaction
             setActiveTab('history');
-
+            
+            const restrictionText = geoFence || timeRestriction ? ' with restrictions' : '';
+            alert(`💰 Transfer request sent to ${to}${restrictionText}! They will receive a notification to accept the transfer.`);
+            
         } catch (error: any) {
-            console.error("Error sending money:", error);
-            alert(`Failed to send payment. Reason: ${error.message || 'An unknown error occurred.'}`);
+            console.error("Error creating transfer:", error);
+            alert(`Failed to create transfer. Reason: ${error.message || 'An unknown error occurred.'}`);
             throw error; // Re-throw for the UI component
         }
     };
     
-    const handleClaimTransaction = async (tx: Transaction) => {
-        if (!navigator.geolocation) {
-            alert("Geolocation is not supported by your browser.");
+    const handleClaimTransaction = async (tx: Transaction, selectedAccountId?: string) => {
+        // For geo/time restricted transfers, get location first
+        if (tx.geoFence || tx.timeRestriction) {
+            if (!navigator.geolocation) {
+                alert("Geolocation is not supported by your browser.");
+                return;
+            }
+
+            setIsClaiming(tx.id);
+            
+            navigator.geolocation.getCurrentPosition(
+                async (position) => {
+                    await processTransferClaim(tx, selectedAccountId, {
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude
+                    });
+                },
+                (error) => {
+                    alert(`Could not get your location: ${error.message}`);
+                    setIsClaiming(null);
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        } else {
+            // For unrestricted transfers, process immediately
+            await processTransferClaim(tx, selectedAccountId);
+        }
+    };
+
+    const processTransferClaim = async (tx: Transaction, selectedAccountId?: string, userCoordinates?: { latitude: number; longitude: number }) => {
+        if (!user || !selectedAccountId) {
+            alert("Please select a destination account to receive the funds.");
+            setIsClaiming(null);
             return;
         }
 
+        const destinationAccount = accounts.find(acc => acc.id === selectedAccountId);
+        if (!destinationAccount) {
+            alert("Invalid destination account selected.");
+            setIsClaiming(null);
+            return;
+        }
+
+        const supabase = getSupabase();
         setIsClaiming(tx.id);
-        
-        navigator.geolocation.getCurrentPosition(
-            async (position) => {
-                const { latitude, longitude } = position.coords;
-                const supabase = getSupabase();
-                try {
-                    const { error } = await supabase.functions.invoke('claim-transaction', {
-                        body: { transactionId: tx.id, userCoordinates: { latitude, longitude } },
-                    });
 
-                    if (error) {
-                        // The function will return a specific error message
-                        throw new Error(error.message || 'The backend function returned an error.');
-                    }
-                    
-                    alert('Transaction claimed successfully! Funds have been released.');
-                    await fetchData();
+        try {
+            console.log('🏦 Processing bank transfer claim...', {
+                transactionId: tx.id,
+                fromAccount: tx.from_account_id,
+                toAccount: selectedAccountId,
+                amount: tx.amount,
+                hasGeoRestriction: !!tx.geoFence,
+                hasTimeRestriction: !!tx.timeRestriction
+            });
 
-                } catch (err: any) {
-                     // Catching errors from the invoke call itself or thrown from the function
-                    const detail = err.context?.details ? JSON.parse(err.context.details).error : err.message;
-                    alert(`Claim failed: ${detail}`);
-                } finally {
-                    setIsClaiming(null);
-                }
-            },
-            (error) => {
-                alert(`Could not get your location: ${error.message}`);
-                setIsClaiming(null);
-            },
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-        );
+            // Call bank transfer function
+            const { data, error } = await supabase.functions.invoke('process-bank-transfer', {
+                body: { 
+                    transactionId: tx.id,
+                    destinationAccountId: selectedAccountId,
+                    userCoordinates: userCoordinates // Only present for restricted transfers
+                },
+            });
+
+            if (error) {
+                throw new Error(error.message || 'The backend function returned an error.');
+            }
+            
+            if (data.success) {
+                alert(`🎉 Transfer completed! $${tx.amount} has been deposited to your ${destinationAccount.name} account.`);
+                await fetchData();
+            } else {
+                throw new Error(data.message || 'Transfer failed');
+            }
+
+        } catch (err: any) {
+            const detail = err.context?.details ? JSON.parse(err.context.details).error : err.message;
+            alert(`Transfer failed: ${detail}`);
+        } finally {
+            setIsClaiming(null);
+        }
     };
 
     const handleRequestMoney = async (to: string, amount: number, description: string) => {
@@ -701,6 +759,7 @@ const App: React.FC = () => {
                             onDeclineRequest={handleDeclineRequest}
                             onClaimTransaction={handleClaimTransaction}
                             isClaimingId={isClaiming}
+                            accounts={accounts}
                         />
                     )}
                 </div>

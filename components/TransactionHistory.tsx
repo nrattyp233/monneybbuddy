@@ -1,5 +1,5 @@
-import React from 'react';
-import { Transaction, TransactionStatus } from '../types';
+import React, { useState } from 'react';
+import { Transaction, TransactionStatus, Account } from '../types';
 import { SendIcon, LockIcon, DollarSignIcon, RefreshCwIcon, MapPinIcon } from './icons';
 
 interface TransactionHistoryProps {
@@ -8,11 +8,23 @@ interface TransactionHistoryProps {
   onTransactionClick: (transaction: Transaction) => void;
   onApproveRequest: (transaction: Transaction) => void;
   onDeclineRequest: (transaction: Transaction) => void;
-  onClaimTransaction: (transaction: Transaction) => void;
+  onClaimTransaction: (transaction: Transaction, selectedAccountId?: string) => void;
   isClaimingId: string | null;
+  accounts: Account[]; // Add accounts for destination selection
 }
 
-const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions, currentUserEmail, onTransactionClick, onApproveRequest, onDeclineRequest, onClaimTransaction, isClaimingId }) => {
+const TransactionHistory: React.FC<TransactionHistoryProps> = ({ 
+  transactions, 
+  currentUserEmail, 
+  onTransactionClick, 
+  onApproveRequest, 
+  onDeclineRequest, 
+  onClaimTransaction, 
+  isClaimingId,
+  accounts 
+}) => {
+    const [selectedAccountId, setSelectedAccountId] = useState<string>('');
+    const [showAccountSelector, setShowAccountSelector] = useState<string | null>(null);
 
     const getStatusChip = (status: TransactionStatus) => {
         const statuses: Record<TransactionStatus, string> = {
@@ -103,24 +115,108 @@ const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions, c
                             </>
                         )}
                         {isMyIncomingPendingSend && hasRestrictions && (
-                             <button 
-                                onClick={(e) => { e.stopPropagation(); onClaimTransaction(tx); }} 
-                                disabled={isClaimingId === tx.id}
-                                className="w-full sm:w-auto text-xs text-center justify-center flex items-center gap-2 flex-1 bg-lime-600 text-white px-3 py-2 rounded-md hover:bg-lime-500 transition font-bold disabled:bg-gray-500 disabled:cursor-wait"
-                            >
-                                {isClaimingId === tx.id ? <RefreshCwIcon className="w-4 h-4 animate-spin"/> : <MapPinIcon className="w-4 h-4"/>}
-                                {isClaimingId === tx.id ? 'Claiming...' : 'Claim'}
-                            </button>
+                            <>
+                                {showAccountSelector === tx.id ? (
+                                    <div className="flex flex-col gap-2 w-full">
+                                        <select 
+                                            value={selectedAccountId} 
+                                            onChange={(e) => setSelectedAccountId(e.target.value)}
+                                            className="bg-gray-700 border border-gray-600 rounded-md p-2 text-xs"
+                                        >
+                                            <option value="">Select destination account...</option>
+                                            {accounts.filter(acc => acc.can_receive && acc.balance !== null).map(acc => (
+                                                <option key={acc.id} value={acc.id}>
+                                                    {acc.name} - {acc.type}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <div className="flex gap-1">
+                                            <button 
+                                                onClick={(e) => { 
+                                                    e.stopPropagation(); 
+                                                    if (selectedAccountId) {
+                                                        onClaimTransaction(tx, selectedAccountId);
+                                                        setShowAccountSelector(null);
+                                                    } else {
+                                                        alert('Please select a destination account');
+                                                    }
+                                                }} 
+                                                disabled={isClaimingId === tx.id || !selectedAccountId}
+                                                className="flex-1 text-xs bg-lime-600 text-white px-2 py-1 rounded hover:bg-lime-500 transition disabled:bg-gray-500"
+                                            >
+                                                {isClaimingId === tx.id ? 'Claiming...' : 'Claim'}
+                                            </button>
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setShowAccountSelector(null); }}
+                                                className="text-xs bg-gray-600 text-white px-2 py-1 rounded hover:bg-gray-500"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button 
+                                        onClick={(e) => { e.stopPropagation(); setShowAccountSelector(tx.id); setSelectedAccountId(''); }} 
+                                        disabled={isClaimingId === tx.id}
+                                        className="w-full sm:w-auto text-xs text-center justify-center flex items-center gap-2 flex-1 bg-lime-600 text-white px-3 py-2 rounded-md hover:bg-lime-500 transition font-bold disabled:bg-gray-500 disabled:cursor-wait"
+                                    >
+                                        <MapPinIcon className="w-4 h-4"/>
+                                        Claim to Account
+                                    </button>
+                                )}
+                            </>
                         )}
                         {isMyIncomingPendingSend && !hasRestrictions && (
-                             <button 
-                                onClick={(e) => { e.stopPropagation(); onClaimTransaction(tx); }} 
-                                disabled={isClaimingId === tx.id}
-                                className="w-full sm:w-auto text-xs text-center justify-center flex items-center gap-2 flex-1 bg-blue-600 text-white px-3 py-2 rounded-md hover:bg-blue-500 transition font-bold disabled:bg-gray-500 disabled:cursor-wait"
-                            >
-                                {isClaimingId === tx.id ? <RefreshCwIcon className="w-4 h-4 animate-spin"/> : <DollarSignIcon className="w-4 h-4"/>}
-                                {isClaimingId === tx.id ? 'Accepting...' : 'Accept Payment'}
-                            </button>
+                            <>
+                                {showAccountSelector === tx.id ? (
+                                    <div className="flex flex-col gap-2 w-full">
+                                        <select 
+                                            value={selectedAccountId} 
+                                            onChange={(e) => setSelectedAccountId(e.target.value)}
+                                            className="bg-gray-700 border border-gray-600 rounded-md p-2 text-xs"
+                                        >
+                                            <option value="">Select destination account...</option>
+                                            {accounts.filter(acc => acc.can_receive && acc.balance !== null).map(acc => (
+                                                <option key={acc.id} value={acc.id}>
+                                                    {acc.name} - {acc.type}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <div className="flex gap-1">
+                                            <button 
+                                                onClick={(e) => { 
+                                                    e.stopPropagation(); 
+                                                    if (selectedAccountId) {
+                                                        onClaimTransaction(tx, selectedAccountId);
+                                                        setShowAccountSelector(null);
+                                                    } else {
+                                                        alert('Please select a destination account');
+                                                    }
+                                                }} 
+                                                disabled={isClaimingId === tx.id || !selectedAccountId}
+                                                className="flex-1 text-xs bg-blue-600 text-white px-2 py-1 rounded hover:bg-blue-500 transition disabled:bg-gray-500"
+                                            >
+                                                {isClaimingId === tx.id ? 'Accepting...' : 'Accept'}
+                                            </button>
+                                            <button 
+                                                onClick={(e) => { e.stopPropagation(); setShowAccountSelector(null); }}
+                                                className="text-xs bg-gray-600 text-white px-2 py-1 rounded hover:bg-gray-500"
+                                            >
+                                                Cancel
+                                            </button>
+                                        </div>
+                                    </div>
+                                ) : (
+                                    <button 
+                                        onClick={(e) => { e.stopPropagation(); setShowAccountSelector(tx.id); setSelectedAccountId(''); }} 
+                                        disabled={isClaimingId === tx.id}
+                                        className="w-full sm:w-auto text-xs text-center justify-center flex items-center gap-2 flex-1 bg-blue-600 text-white px-3 py-2 rounded-md hover:bg-blue-500 transition font-bold disabled:bg-gray-500 disabled:cursor-wait"
+                                    >
+                                        <DollarSignIcon className="w-4 h-4"/>
+                                        Accept to Account
+                                    </button>
+                                )}
+                            </>
                         )}
                          {tx.status === TransactionStatus.PENDING && !isActionable && (
                              <span className="text-xs text-yellow-400 font-semibold pr-2">Awaiting action</span>
