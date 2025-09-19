@@ -47,6 +47,13 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
     }, [amount]);
 
+    // Update fromAccountId when accounts change
+    useEffect(() => {
+        if (accounts.length > 0 && !accounts.find(acc => acc.id === fromAccountId)) {
+            setFromAccountId(accounts[0].id);
+        }
+    }, [accounts, fromAccountId]);
+
     // State for map
     const [locationQuery, setLocationQuery] = useState('');
     const [mapCenter, setMapCenter] = useState<[number, number]>([40.7128, -74.0060]); // Default: NYC
@@ -156,7 +163,23 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                     </div>
                      <div>
                         <label htmlFor="amount" className="block text-sm font-medium text-gray-300 mb-1">Amount ($)</label>
-                        <input type="number" id="amount" name="amount" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" autoComplete="transaction-amount" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" />
+                        <input 
+                            type="text" 
+                            inputMode="decimal" 
+                            id="amount" 
+                            name="amount" 
+                            value={amount} 
+                            onChange={e => {
+                                const value = e.target.value;
+                                // Only allow positive numbers and decimals
+                                if (value === '' || /^\d*\.?\d*$/.test(value)) {
+                                    setAmount(value);
+                                }
+                            }} 
+                            placeholder="0.00" 
+                            autoComplete="transaction-amount" 
+                            className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" 
+                        />
                     </div>
                 </div>
                  <div>
