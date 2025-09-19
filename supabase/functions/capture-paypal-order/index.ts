@@ -1,13 +1,4 @@
-// Supabase Edge Function: capture-paypal-order
-// Description: Captures a PayPal order after user approval
-// Requirements:
-//   Supabase secrets set:
-//     PAYPAL_CLIENT_ID
-//     PAYPAL_CLIENT_SECRET
-//     PAYPAL_API_URL (e.g. 'https://api-m.paypal.com' for production)
-
-import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+// Supabase Edge Function: capture-paypal-order\n// Description: Captures a PayPal order after user approval with security hardening\n// Security Features: Input validation, audit logging, idempotency checks\n// Requirements:\n//   Supabase secrets set:\n//     PAYPAL_CLIENT_ID\n//     PAYPAL_CLIENT_SECRET\n//     PAYPAL_API_URL (e.g. 'https://api-m.paypal.com' for production)\n\nimport { serve } from \"https://deno.land/std@0.224.0/http/server.ts\";\nimport { createClient } from 'https://esm.sh/@supabase/supabase-js@2';\n\n// Capture attempt tracking for idempotency\nconst captureAttempts = new Map<string, { attempts: number; lastAttempt: number }>();\nconst MAX_CAPTURE_ATTEMPTS = 3;\nconst CAPTURE_COOLDOWN = 30000; // 30 seconds"
 
 interface CaptureOrderRequest {
   order_id: string;

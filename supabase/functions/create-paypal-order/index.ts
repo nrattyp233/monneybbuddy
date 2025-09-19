@@ -1,5 +1,6 @@
 // Supabase Edge Function: create-paypal-order
-// Description: Creates a PayPal order for money transfers
+// Description: Creates a PayPal order for money transfers with security hardening
+// Security Features: Input validation, rate limiting, audit logging
 // Requirements:
 //   Supabase secrets set:
 //     PAYPAL_CLIENT_ID
@@ -8,6 +9,12 @@
 //     ALLOWED_ORIGIN (frontend origin for CORS)
 
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+
+// Rate limiting: Max 10 orders per minute per user
+const RATE_LIMIT_WINDOW = 60000; // 1 minute
+const MAX_ORDERS_PER_WINDOW = 10;
+const userRequestCounts = new Map<string, { count: number; windowStart: number }>();
 
 interface CreateOrderRequest {
   amount: string;
@@ -35,10 +42,81 @@ interface PayPalOrderResponse {
 const PAYPAL_CLIENT_ID = Deno.env.get('PAYPAL_CLIENT_ID');
 const PAYPAL_CLIENT_SECRET = Deno.env.get('PAYPAL_CLIENT_SECRET');
 const PAYPAL_API_URL = Deno.env.get('PAYPAL_API_URL') || 'https://api-m.paypal.com';
+const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
 const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' 
   ? RAW_ALLOWED_ORIGIN.slice(0, -1) 
   : RAW_ALLOWED_ORIGIN;
+
+const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false } })
+  : null;
+
+// Security validation functions
+function validateOrderInput(body: CreateOrderRequest): { valid: boolean; errors: string[] } {
+  const errors: string[] = [];
+  
+  // Validate amount
+  const amount = parseFloat(body.amount);
+  if (isNaN(amount) || amount <= 0 || amount > 10000) {
+    errors.push('Amount must be between $0.01 and $10,000');
+  }
+  
+  // Validate fee
+  const fee = parseFloat(body.fee || '0');
+  if (isNaN(fee) || fee < 0 || fee > amount * 0.1) {
+    errors.push('Invalid fee amount');
+  }
+  
+  // Validate email format
+  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!emailRegex.test(body.recipient_email)) {
+    errors.push('Invalid recipient email format');
+  }
+  
+  // Validate description length
+  if (body.description && body.description.length > 200) {
+    errors.push('Description must be 200 characters or less');
+  }
+  
+  return { valid: errors.length === 0, errors };
+}
+
+function checkRateLimit(userId: string): { allowed: boolean; resetTime?: number } {
+  const now = Date.now();
+  const userRequests = userRequestCounts.get(userId);
+  
+  if (!userRequests || now - userRequests.windowStart > RATE_LIMIT_WINDOW) {
+    // Reset or initialize window
+    userRequestCounts.set(userId, { count: 1, windowStart: now });
+    return { allowed: true };
+  }
+  
+  if (userRequests.count >= MAX_ORDERS_PER_WINDOW) {
+    const resetTime = userRequests.windowStart + RATE_LIMIT_WINDOW;
+    return { allowed: false, resetTime };
+  }
+  
+  userRequests.count++;
+  return { allowed: true };
+}
+
+async function logSecurityEvent(event: string, details: any, userId?: string) {
+  if (supabaseAdmin) {
+    try {
+      await supabaseAdmin.from('security_logs').insert({
+        event_type: event,
+        details: JSON.stringify(details),
+        user_id: userId,
+        timestamp: new Date().toISOString(),
+        ip_address: details.ip || 'unknown'
+      });
+    } catch (error) {
+      console.error('Failed to log security event:', error);
+    }
+  }
+}
 
 function buildCors(originHeader: string | null) {
   let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;
@@ -77,19 +155,107 @@ async function getPayPalAccessToken(): Promise<string> {
 
 serve(async (req) => {
   const originHeader = req.headers.get('origin');
+  const clientIP = req.headers.get('x-forwarded-for') || req.headers.get('x-real-ip') || 'unknown';
+  
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: buildCors(originHeader) });
   }
 
+  // Enhanced security headers
+  const securityHeaders = {
+    ...buildCors(originHeader),
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+    'X-XSS-Protection': '1; mode=block',
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains'
+  };
+
   if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
-    return new Response(JSON.stringify({ error: 'PayPal credentials not configured on server.' }), {
+    await logSecurityEvent('config_error', { error: 'Missing PayPal credentials', ip: clientIP });
+    return new Response(JSON.stringify({ error: 'PayPal service temporarily unavailable.' }), {
       status: 500,
-      headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+      headers: { 'Content-Type': 'application/json', ...securityHeaders }
     });
   }
 
   try {
+    // Extract and validate user authentication
+    let userId: string | null = null;
+    const authHeader = req.headers.get('authorization');
+    
+    if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
+      const token = authHeader.substring(7);
+      const parts = token.split('.');
+      
+      if (parts.length === 3) {
+        try {
+          const payloadRaw = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+          const payload = JSON.parse(payloadRaw);
+          
+          if (payload.sub && typeof payload.sub === 'string') {
+            userId = payload.sub;
+          }
+        } catch (e) {
+          await logSecurityEvent('auth_error', { error: 'Invalid JWT token', ip: clientIP });
+          return new Response(JSON.stringify({ error: 'Authentication failed.' }), {
+            status: 401,
+            headers: { 'Content-Type': 'application/json', ...securityHeaders }
+          });
+        }
+      }
+    }
+
+    if (!userId) {
+      await logSecurityEvent('auth_missing', { ip: clientIP });
+      return new Response(JSON.stringify({ error: 'Authentication required.' }), {
+        status: 401,
+        headers: { 'Content-Type': 'application/json', ...securityHeaders }
+      });
+    }
+
+    // Rate limiting check
+    const rateLimitResult = checkRateLimit(userId);
+    if (!rateLimitResult.allowed) {
+      await logSecurityEvent('rate_limit_exceeded', { 
+        userId, 
+        ip: clientIP,
+        resetTime: rateLimitResult.resetTime 
+      });
+      
+      const remainingSeconds = Math.ceil((rateLimitResult.resetTime! - Date.now()) / 1000);
+      return new Response(JSON.stringify({ 
+        error: 'Too many requests. Please try again later.',
+        retryAfter: remainingSeconds
+      }), {
+        status: 429,
+        headers: { 
+          'Content-Type': 'application/json',
+          'Retry-After': remainingSeconds.toString(),
+          ...securityHeaders 
+        }
+      });
+    }
+
     const body: CreateOrderRequest = await req.json();
+    
+    // Input validation
+    const validation = validateOrderInput(body);
+    if (!validation.valid) {
+      await logSecurityEvent('input_validation_failed', { 
+        userId, 
+        ip: clientIP,
+        errors: validation.errors,
+        body: { ...body, recipient_email: '[REDACTED]' } // Don't log sensitive data
+      });
+      
+      return new Response(JSON.stringify({ 
+        error: 'Invalid input data',
+        details: validation.errors 
+      }), {
+        status: 400,
+        headers: { 'Content-Type': 'application/json', ...securityHeaders }
+      });
+    }
     const { amount, fee, recipient_email, description } = body;
 
     console.log('🎯 Creating PayPal order:', { amount, fee, recipient_email, description });
