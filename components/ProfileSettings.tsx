@@ -19,7 +19,7 @@ const ProfileSettings: React.FC<ProfileSettingsProps> = ({ user, onOpenDevSettin
     const handleSubmit = (e: React.FormEvent) => {
         e.preventDefault();
         // In a real app, you would handle updating user metadata here.
-        alert('Profile updated successfully!');
+        alert('Profile updated! (This is a demo)');
     };
 
     return (

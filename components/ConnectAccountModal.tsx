@@ -4,16 +4,14 @@ import Modal from './Modal';
 import { Account } from '../types';
 import { PlaidIcon, RefreshCwIcon, AlertTriangleIcon } from './icons';
 import { getSupabase } from '../services/supabase';
-import type { User } from '@supabase/supabase-js';
 
 interface ConnectAccountModalProps {
     isOpen: boolean;
     onClose: () => void;
     onConnectionSuccess: (instantAccounts?: { name: string; balance: number | null; provider: string; type?: string }[]) => void; // optional immediate accounts
-    user: User | null;
 }
 
-const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClose, onConnectionSuccess, user }) => {
+const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClose, onConnectionSuccess }) => {
     const [linkToken, setLinkToken] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
@@ -43,29 +41,19 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
 
     // Fetch the link_token from our Supabase Edge Function
     useEffect(() => {
-        if (!isOpen || !user) return;
+        if (!isOpen) return;
 
         const createLinkToken = async () => {
             setIsLoading(true);
             setError(null);
             setRawError(null);
-            setLinkToken(null); // Clear any existing token
-            
             try {
                 const supabase = getSupabase();
-                const { data, error: funcError } = await supabase.functions.invoke('create-link-token', {
-                    body: { 
-                        user_id: user.id, // Explicitly pass user ID
-                        force_refresh: true // Request fresh token
-                    }
-                });
+                const { data, error: funcError } = await supabase.functions.invoke('create-link-token');
+
                 if (funcError) throw funcError;
-                if (data && data.needsServerConfig) {
-                    throw new Error(data.guidance || 'Server needs configuration for Plaid.');
-                }
-                if (!data || !data.link_token) {
-                    throw new Error("Failed to retrieve a link token from the server.");
-                }
+                if (!data || !data.link_token) throw new Error("Failed to retrieve a link token from the server.");
+
                 setLinkToken(data.link_token);
             } catch (err: any) {
                 handleFunctionError(err, 'token creation');
@@ -75,7 +63,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         };
 
         createLinkToken();
-    }, [isOpen, user]);
+    }, [isOpen]);
 
     const onSuccess = useCallback(async (public_token: string) => {
         setIsLoading(true);
@@ -86,23 +74,9 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 body: { public_token },
             });
 
-            if (funcError) {
-                console.error(`❌ Exchange function error for user ${user?.id}:`, funcError);
-                throw funcError;
-            }
-            if (data && data.needsServerConfig) {
-                throw new Error(data.guidance || 'Server needs configuration for Plaid.');
-            }
-            if (data && data.needsReconnection) {
-                // Surface a clear reconnection message
-                throw new Error('Plaid requires re-authorization. Please try connecting again.');
-            }
+            if (funcError) throw funcError;
 
-                user_id: data?.user_id,
-                accounts_count: data?.accounts?.length || 0,
-                accounts: data?.accounts?.map(a => ({ name: a.name, balance: a.balance })) || [],
-                persisted: data?.persisted
-            });
+            console.log('Plaid exchange response:', data); // Debug logging
             
             // If backend persistence failed, fall back to inserting accounts client-side.
             if (data && data.accounts && Array.isArray(data.accounts) && data.persisted === false) {
@@ -138,6 +112,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 type: a.type 
             }));
             
+            console.log('Calling onConnectionSuccess with mapped accounts:', mappedAccounts);
             onConnectionSuccess(mappedAccounts);
             onClose();
 
@@ -152,9 +127,11 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         onSuccess,
         onExit: (err, metadata) => {
             if (err != null) {
+                console.log('Plaid Link exited with error:', err);
             }
         },
         onEvent: (eventName, metadata) => {
+            console.log('Plaid Link event:', eventName, metadata);
         },
     });
 
@@ -167,38 +144,46 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
             setRawError(null);
         }
     }, [isOpen]);
-
+    
     const connectDisabled = !ready || isLoading || !linkToken || !!error;
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} title="Connect Bank Account">
             <div className="space-y-4 text-center">
                 
-                {error && (
-                    <div className="p-3 bg-red-900/50 border border-red-500/50 rounded-md flex flex-col space-y-2 text-sm text-left">
-                        <div className="flex items-start space-x-3 text-red-300">
-                            <AlertTriangleIcon className="w-8 h-8 flex-shrink-0 mt-0.5"/>
-                            <span className="text-red-200 whitespace-pre-wrap">{error}</span>
-                        </div>
-                        {rawError && (
-                            <details className="bg-black/20 rounded p-2 text-xs text-red-400 whitespace-pre-wrap">
-                                <summary className="cursor-pointer text-red-300">Raw error details</summary>
-                                {typeof rawError === 'string' ? rawError : JSON.stringify(rawError, null, 2)}
-                            </details>
-                        )}
-                        <div className="flex justify-end pt-1">
-                            <button
-                                onClick={() => {
-                                    setError(null); 
-                                    setRawError(null); 
-                                    setIsLoading(true); 
-                                    setLinkToken(null);
-                                }}
-                                className="px-3 py-1 text-xs rounded bg-red-700 hover:bg-red-600 text-white"
-                            >Retry</button>
-                        </div>
-                    </div>
-                )}
+                                {error && (
+                                        <div className="p-3 bg-red-900/50 border border-red-500/50 rounded-md flex flex-col space-y-2 text-sm text-left">
+                                                <div className="flex items-start space-x-3 text-red-300">
+                                                        <AlertTriangleIcon className="w-8 h-8 flex-shrink-0 mt-0.5"/>
+                                                        <span className="text-red-200 whitespace-pre-wrap">{error}</span>
+                                                </div>
+                                                {rawError && (
+                                                    <details className="bg-black/20 rounded p-2 text-xs text-red-400 whitespace-pre-wrap">
+                                                        <summary className="cursor-pointer text-red-300">Raw error details</summary>
+                                                        {typeof rawError === 'string' ? rawError : JSON.stringify(rawError, null, 2)}
+                                                    </details>
+                                                )}
+                                                <div className="flex justify-end pt-1">
+                                                    <button
+                                                        onClick={() => {
+                                                            setError(null); setRawError(null); setIsLoading(true); setLinkToken(null);
+                                                            // retry fetching link token
+                                                            const supabase = getSupabase();
+                                                            supabase.functions.invoke('create-link-token')
+                                                                .then(({ data, error: funcError }) => {
+                                                                    if (funcError || !data?.link_token) {
+                                                                        handleFunctionError(funcError || new Error('Failed to retrieve a link token on retry'), 'token creation');
+                                                                    } else {
+                                                                        setLinkToken(data.link_token);
+                                                                    }
+                                                                })
+                                                                .finally(() => setIsLoading(false));
+                                                        }}
+                                                        className="px-3 py-1 text-xs rounded bg-red-700 hover:bg-red-600 text-white"
+                                                    >Retry</button>
+                                                </div>
+                                        </div>
+                                )}
 
                 <div className="pt-4">
                     <button 
@@ -220,7 +205,7 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                     </button>
                 </div>
 
-                <p className="text-xs text-gray-500 pt-2">
+                 <p className="text-xs text-gray-500 pt-2">
                     By connecting, you agree to the Plaid <a href="https://plaid.com/legal" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-300">End User Privacy Policy</a>.
                 </p>
             </div>

@@ -40,6 +40,9 @@ const App: React.FC = () => {
     const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
     const [accountToRemove, setAccountToRemove] = useState<Account | null>(null);
     const [isClaiming, setIsClaiming] = useState<string | null>(null); // Track claiming state by transaction ID
+    const [isRefreshingBalances, setIsRefreshingBalances] = useState(false);
+    const [lastRefreshTime, setLastRefreshTime] = useState<number>(0);
+    const [refreshError, setRefreshError] = useState<string | null>(null);
 
     const isAdmin = user?.email === ADMIN_EMAIL;
 
@@ -56,7 +59,26 @@ const App: React.FC = () => {
 
         const { data: authListener } = supabase.auth.onAuthStateChange(
             (_event, session) => {
-                setUser(session?.user ?? null);
+                const newUser = session?.user ?? null;
+                const currentUserId = user?.id;
+                const newUserId = newUser?.id;
+                
+                setUser(newUser);
+                
+                // Clear all data when user logs out OR when a different user logs in
+                if (!newUser || (currentUserId && newUserId && currentUserId !== newUserId)) {
+                    const reason = !newUser ? 'User logged out' : 'Different user logged in';
+                    console.log(`${reason} - clearing all data (was: ${currentUserId}, now: ${newUserId})`);
+                    
+                    // Clear application state
+                    setAccounts([]);
+                    setTransactions([]);
+                    setLockedSavings([]);
+                    setSelectedTransaction(null);
+                    setAccountToRemove(null);
+                    setIsClaiming(null);
+                    setRefreshError(null);
+                }
             }
         );
 
@@ -70,11 +92,17 @@ const App: React.FC = () => {
         const supabase = getSupabase();
 
         try {
-            console.log('Fetching data for user:', user.id); // Debug logging
+            console.log('🔍 DEBUGGING: Fetching data for user:', user.id, 'email:', user.email); // Debug logging
             
-            const [accountsRes, transactionsRes, savingsRes] = await Promise.all([
+            // Get transactions where user is either sender or recipient
+            const { data: transactionsData, error: transactionsError } = await supabase
+                .from('transactions')
+                .select('*')
+                .or(`from_details.eq.${user.email},to_details.eq.${user.email}`)
+                .order('created_at', { ascending: false });
+            
+            const [accountsRes, savingsRes] = await Promise.all([
                 supabase.from('accounts').select('*').eq('user_id', user.id),
-                supabase.from('transactions').select('*').or(`from_details.eq.${user.email},to_details.eq.${user.email}`).order('created_at', { ascending: false }),
                 supabase.from('locked_savings').select('*').eq('user_id', user.id)
             ]);
 
@@ -82,19 +110,41 @@ const App: React.FC = () => {
                 console.error('Accounts fetch error:', accountsRes.error);
                 throw accountsRes.error;
             }
-            if (transactionsRes.error) {
-                console.error('Transactions fetch error:', transactionsRes.error);
-                throw transactionsRes.error;
+            if (transactionsError) {
+                console.error('Transactions fetch error:', transactionsError);
+                throw transactionsError;
             }
             if (savingsRes.error) {
                 console.error('Savings fetch error:', savingsRes.error);
                 throw savingsRes.error;
             }
 
+            console.log('🔍 DEBUGGING: Raw transactions returned:', transactionsData?.length || 0);
+            if (transactionsData && transactionsData.length > 0) {
+                console.log('🔍 DEBUGGING: First few transactions:', transactionsData.slice(0, 3).map(t => ({
+                    id: t.id,
+                    from: t.from_details,
+                    to: t.to_details,
+                    amount: t.amount,
+                    status: t.status,
+                    created: t.created_at
+                })));
+            }
+
             console.log('Fetched accounts:', accountsRes.data); // Debug logging
             setAccounts(accountsRes.data as Account[]);
             
-            const formattedTransactions = transactionsRes.data.map(tx => ({
+            console.log('Raw transactions from DB:', transactionsData?.length, 'transactions');
+            console.log('Transaction details:', transactionsData?.map(t => ({ 
+                id: t.id, 
+                from: t.from_details, 
+                to: t.to_details, 
+                amount: t.amount, 
+                status: t.status,
+                type: t.type
+            })));
+            
+            const formattedTransactions = transactionsData.map(tx => ({
                 ...tx,
                 date: new Date(tx.created_at), // Map created_at to date
                 geoFence: tx.geo_fence,
@@ -123,6 +173,182 @@ const App: React.FC = () => {
         fetchData();
     }, [user, fetchData]);
 
+    // Live updates: subscribe to accounts changes for this user
+    useEffect(() => {
+        if (!user) return;
+        const supabase = getSupabase();
+        const channel = supabase
+            .channel(`accounts-realtime-${user.id}`)
+            .on('postgres_changes', {
+                event: '*',
+                schema: 'public',
+                table: 'accounts',
+                filter: `user_id=eq.${user.id}`,
+            }, (payload) => {
+                // Update local state with minimal fetch to keep UI in sync
+                fetchData();
+            })
+            .subscribe((status) => {
+                if (status === 'SUBSCRIBED') {
+                    console.log('✅ Subscribed to account balance updates');
+                }
+            });
+
+        return () => {
+            try { supabase.removeChannel(channel); } catch {}
+        };
+    }, [user, fetchData]);
+
+    // Auto-refresh balances every 5 minutes when user is active
+    useEffect(() => {
+        if (!user) return;
+
+        const autoRefresh = async () => {
+            console.log('🔄 Auto-refreshing balances...');
+            try {
+                const supabase = getSupabase();
+                const { data, error } = await supabase.functions.invoke('refresh-account-balances');
+                
+                if (!error && data?.success) {
+                    if (data.needsReconnection) {
+                        console.log('ℹ️ Auto-refresh: Plaid reconnection needed');
+                        setIsConnectAccountModalOpen(true);
+                    } else if (data.needsSetup) {
+                        console.log('ℹ️ Auto-refresh: Database setup needed');
+                    } else if (data.updatedAccounts > 0) {
+                        console.log(`✅ Auto-refresh: Updated ${data.updatedAccounts} accounts`);
+                        await fetchData(); // Only refresh UI if balances actually updated
+                    } else {
+                        console.log('ℹ️ Auto-refresh: No accounts to update');
+                    }
+                } else {
+                    console.warn('⚠️ Auto-refresh failed:', error?.message || 'Unknown error');
+                }
+            } catch (error) {
+                console.warn('⚠️ Auto-refresh error:', error);
+            }
+        };
+
+        // Initial auto-refresh after 10 seconds
+        const initialTimeout = setTimeout(autoRefresh, 10000);
+        
+        // Then refresh every 5 minutes
+        const interval = setInterval(autoRefresh, 5 * 60 * 1000);
+
+        return () => {
+            clearTimeout(initialTimeout);
+            clearInterval(interval);
+        };
+    }, [user, fetchData]);
+
+    // --- Production-Ready Balance Refresh Handler ---
+    const handleRefreshBalances = async () => {
+        if (!user || isRefreshingBalances) return;
+        
+        // Debounce: prevent rapid successive refreshes
+        const now = Date.now();
+        const timeSinceLastRefresh = now - lastRefreshTime;
+        const DEBOUNCE_MS = 5000; // 5 seconds minimum between refreshes
+        
+        if (timeSinceLastRefresh < DEBOUNCE_MS) {
+            const remainingSeconds = Math.ceil((DEBOUNCE_MS - timeSinceLastRefresh) / 1000);
+            alert(`⏳ Please wait ${remainingSeconds} more seconds before refreshing again.`);
+            return;
+        }
+        
+        setIsRefreshingBalances(true);
+        setRefreshError(null);
+        setLastRefreshTime(now);
+        
+        try {
+            console.log('🔄 Refreshing account balances...');
+            const supabase = getSupabase();
+            
+            const { data, error } = await supabase.functions.invoke('refresh-account-balances');
+            
+            if (error) {
+                console.error('❌ Balance refresh failed:', error);
+                const errorMsg = error.message || 'Unknown server error';
+                setRefreshError(errorMsg);
+                
+                // Show user-friendly error based on error type
+                if (errorMsg.includes('FunctionsHttpError')) {
+                    alert('⚠️ Server configuration issue. Please check that Plaid credentials are properly set in your project settings.');
+                } else if (errorMsg.includes('timeout')) {
+                    alert('⏳ Request timed out. Please try again in a moment.');
+                } else {
+                    alert(`❌ Failed to refresh balances: ${errorMsg}`);
+                }
+                return;
+            }
+            
+            console.log('✅ Balance refresh result:', data);
+            
+            if (data?.success) {
+                // Clear any previous errors
+                setRefreshError(null);
+                
+                // Refresh the UI data after successful balance update
+                await fetchData();
+                
+                // Handle specific response flags from the server
+                if (data.rateLimited) {
+                    alert(`⏳ Rate limited: ${data.error}. Please try again later.`);
+                } else if (data.needsReconnection) {
+                    console.log('🔄 Server indicates reconnection needed, opening Plaid modal');
+                    setIsConnectAccountModalOpen(true);
+                    
+                    const plaidError = data.plaidError ? ` (${data.plaidError.code}: ${data.plaidError.message})` : '';
+                    alert(`🔐 Your bank connection needs re-authorization. Please complete the Plaid prompt.${plaidError}`);
+                } else if (data.needsSetup) {
+                    alert('⚠️ Database schema setup required. Please apply the database migrations first.');
+                } else if (data.needsServerConfig) {
+                    alert('⚠️ Server configuration incomplete. Please ensure Plaid credentials are set in project settings.');
+                } else if (data.needsAuth) {
+                    alert('🔐 Authentication required. Please sign in again.');
+                } else if (data.updatedAccounts > 0) {
+                    console.log(`✅ Successfully updated ${data.updatedAccounts} accounts`);
+                    // Success - show subtle feedback without modal
+                    setRefreshError(null);
+                } else {
+                    alert('ℹ️ No accounts were updated. You may need to connect bank accounts first.');
+                }
+                
+                // Log any warnings/errors from the refresh process
+                if (data.errors && data.errors.length > 0) {
+                    console.warn('⚠️ Refresh completed with warnings:', data.errors);
+                }
+                
+            } else {
+                // Server returned success: false
+                const errorMsg = data?.error || 'Unknown error from server';
+                setRefreshError(errorMsg);
+                
+                if (data?.canRetry) {
+                    alert(`⚠️ ${errorMsg}\n\nYou can try refreshing again in a moment.`);
+                } else {
+                    alert(`❌ ${errorMsg}`);
+                }
+            }
+            
+        } catch (error: any) {
+            console.error('❌ Error refreshing balances:', error);
+            const errorMsg = error.message || 'Network or client error';
+            setRefreshError(errorMsg);
+            
+            // Provide specific guidance based on error type
+            if (errorMsg.includes('NetworkError') || errorMsg.includes('fetch')) {
+                alert('🌐 Network error. Please check your connection and try again.');
+            } else if (errorMsg.includes('FunctionsHttpError')) {
+                alert('⚠️ Server configuration issue. Please contact support if this persists.');
+            } else {
+                alert(`❌ Failed to refresh balances: ${errorMsg}`);
+            }
+        } finally {
+            setIsRefreshingBalances(false);
+        }
+    };
+
     // --- Action Handlers ---
 
     const handleSendMoney = async (fromAccountId: string, to: string, amount: number, description: string, geoFence: GeoFence | undefined, timeRestriction: TimeRestriction | undefined) => {
@@ -134,217 +360,198 @@ const App: React.FC = () => {
         
         const fee = amount * TRANSACTION_FEE_RATE;
         const totalDebit = amount + fee;
-        const hasRestrictions = !!geoFence || !!timeRestriction;
         const supabase = getSupabase();
     
         try {
-            if (hasRestrictions) {
-                // --- INTERNAL CONDITIONAL TRANSFER ---
-                if (fromAccount.balance === null || fromAccount.balance < totalDebit) {
-                    throw new Error("Insufficient funds to cover the amount and transaction fee.");
-                }
-    
-                // 1. Debit the sender's account immediately for amount + fee
-                const { error: updateError } = await supabase
-                    .from('accounts')
-                    .update({ balance: fromAccount.balance - totalDebit })
-                    .eq('id', fromAccountId);
-                if (updateError) throw updateError;
-    
-                // 2. Create the 'Pending' transaction for the recipient to claim
-                const { error: insertError } = await supabase.from('transactions').insert({
-                    user_id: user.id,
-                    from_details: user.email,
-                    to_details: to,
-                    amount: amount,
-                    fee: fee,
-                    description: description,
-                    type: 'send',
-                    status: 'Pending',
-                    geo_fence: geoFence,
-                    time_restriction: timeRestriction,
-                });
-                if (insertError) throw insertError;
-    
-                await fetchData();
-                setActiveTab('history');
-                alert('Your conditional payment has been sent. The recipient must claim it by meeting the conditions.');
-    
-            } else {
-                // --- REAL PAYPAL TRANSFER ---
-                console.log('🚀 Starting real PayPal transfer...', { amount, fee, to, description });
-                
-                const { data: orderData, error: orderError } = await supabase.functions.invoke('create-paypal-order', {
-                    body: { 
-                        amount: amount.toFixed(2), 
-                        fee: fee.toFixed(2),
-                        recipient_email: to, 
-                        description 
-                    },
-                });
-    
-                if (orderError) {
-                    console.error('❌ PayPal order creation failed:', orderError);
-                    throw orderError;
-                }
-                
-                console.log('✅ PayPal order created:', orderData);
-                const { orderId, approval_url, success } = orderData;
-                
-                if (!success || !orderId || !approval_url) {
-                    throw new Error("Failed to create PayPal order - missing required data");
-                }
-
-                // Create pending transaction record BEFORE PayPal approval
-                const { error: insertError } = await supabase.from('transactions').insert({
-                    user_id: user.id,
-                    from_details: user.email,
-                    to_details: to,
-                    amount: amount,
-                    fee: fee,
-                    description: description,
-                    type: 'send',
-                    status: 'Pending',
-                    paypal_order_id: orderId,
-                    payment_method: 'paypal'
-                });
-                
-                if (insertError) {
-                    console.error('❌ Failed to create transaction record:', insertError);
-                    throw insertError;
-                }
-
-                console.log('💳 Opening PayPal checkout window...');
-                // Open PayPal approval URL in new window
-                const paypalWindow = window.open(approval_url, 'paypal-checkout', 'width=600,height=700,scrollbars=yes');
-                
-                if (!paypalWindow) {
-                    throw new Error('Failed to open PayPal checkout window. Please allow popups and try again.');
-                }
-
-                // Monitor PayPal window completion
-                const checkInterval = setInterval(async () => {
-                    try {
-                        if (paypalWindow.closed) {
-                            clearInterval(checkInterval);
-                            console.log('🔄 PayPal window closed, capturing payment...');
-
-                            // Capture the PayPal payment
-                            const { data: captureData, error: captureError } = await supabase.functions.invoke('capture-paypal-order', {
-                                body: { 
-                                    order_id: orderId,
-                                    user_id: user.id
-                                }
-                            });
-
-                            if (captureError) {
-                                console.error('❌ PayPal capture failed:', captureError);
-                                // Update transaction status to failed
-                                await supabase.from('transactions')
-                                    .update({ status: 'Failed' })
-                                    .eq('paypal_order_id', orderId);
-                                
-                                alert('❌ Payment failed. Please try again.');
-                                return;
-                            }
-
-                            console.log('🎉 PayPal payment captured successfully:', captureData);
-                            
-                            if (captureData.success) {
-                                // Update transaction status to completed
-                                await supabase.from('transactions')
-                                    .update({ 
-                                        status: 'Completed',
-                                        external_transaction_id: captureData.transaction_id
-                                    })
-                                    .eq('paypal_order_id', orderId);
-
-                                alert(`🎉 $${amount} successfully sent to ${to} via PayPal!`);
-                                await fetchData(); // Refresh to show completed transaction
-                                setActiveTab('history');
-                            } else {
-                                alert('⚠️ Payment status unclear. Please check your PayPal account.');
-                            }
-                        }
-                    } catch (error) {
-                        console.error('Error in PayPal completion check:', error);
-                        clearInterval(checkInterval);
-                    }
-                }, 2000); // Check every 2 seconds
-
-                // Timeout after 10 minutes
-                setTimeout(() => {
-                    clearInterval(checkInterval);
-                    if (paypalWindow && !paypalWindow.closed) {
-                        paypalWindow.close();
-                        console.log('⏰ PayPal checkout timed out');
-                    }
-                }, 600000); // 10 minutes
-
-                console.log('⏳ Waiting for PayPal approval...');
+            // NEW SYSTEM: Create pending bank-to-bank transfer
+            console.log('🏦 Creating bank-to-bank transfer...', { 
+                fromAccount: fromAccount.name, 
+                amount, 
+                fee, 
+                to, 
+                description, 
+                geoFence, 
+                timeRestriction 
+            });
+            
+            // Check if sender has sufficient balance
+            if (fromAccount.balance === null || fromAccount.balance < totalDebit) {
+                throw new Error("Insufficient funds to cover the amount and transaction fee.");
             }
+
+            // Create pending transaction record via schema-aware edge function
+            const { data: createTxData, error: createTxError } = await supabase.functions.invoke('create-transaction', {
+                body: {
+                    to,
+                    amount,
+                    fee,
+                    description,
+                    kind: 'send',
+                    payment_method: 'bank_transfer',
+                    from_account_id: fromAccountId,
+                    geoFence,
+                    timeRestriction
+                }
+            });
+
+            console.log('Create transaction response:', { createTxData, createTxError });
+
+            if (createTxError) {
+                console.error('❌ Function invocation error:', createTxError);
+                throw new Error(`Function error: ${createTxError.message || JSON.stringify(createTxError)}`);
+            }
+
+            if (createTxData && createTxData.success === false) {
+                console.error('❌ Function returned error:', createTxData);
+                const errorMsg = createTxData.error || createTxData.details || 'Unknown function error';
+                throw new Error(`Transaction creation failed: ${JSON.stringify(errorMsg)}`);
+            }
+
+            if (!createTxData || !createTxData.success) {
+                console.error('❌ Unexpected response format:', createTxData);
+                throw new Error(`Unexpected response: ${JSON.stringify(createTxData)}`);
+            }
+
+            console.log('✅ Pending bank transfer created successfully');
+            await fetchData(); // Refresh to show pending transaction
+            setActiveTab('history');
+            
+            const restrictionText = geoFence || timeRestriction ? ' with restrictions' : '';
+            alert(`💰 Transfer request sent to ${to}${restrictionText}! They will receive a notification to accept the transfer.`);
+            
         } catch (error: any) {
-            console.error("Error sending money:", error);
-            alert(`Failed to send payment. Reason: ${error.message || 'An unknown error occurred.'}`);
+            console.error("Error creating transfer:", error);
+            
+            // Extract meaningful error message
+            let errorMessage = 'An unknown error occurred.';
+            if (error.message) {
+                errorMessage = error.message;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            } else if (error.details) {
+                errorMessage = error.details;
+            }
+            
+            // Show user-friendly error
+            alert(`Failed to create transfer. Reason: ${errorMessage}`);
             throw error; // Re-throw for the UI component
         }
     };
     
-    const handleClaimTransaction = async (tx: Transaction) => {
-        if (!navigator.geolocation) {
-            alert("Geolocation is not supported by your browser.");
+    const handleClaimTransaction = async (tx: Transaction, selectedAccountId?: string) => {
+        // For geo/time restricted transfers, get location first
+        if (tx.geoFence || tx.timeRestriction) {
+            if (!navigator.geolocation) {
+                alert("Geolocation is not supported by your browser.");
+                return;
+            }
+
+            setIsClaiming(tx.id);
+            
+            navigator.geolocation.getCurrentPosition(
+                async (position) => {
+                    await processTransferClaim(tx, selectedAccountId, {
+                        latitude: position.coords.latitude,
+                        longitude: position.coords.longitude
+                    });
+                },
+                (error) => {
+                    alert(`Could not get your location: ${error.message}`);
+                    setIsClaiming(null);
+                },
+                { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+            );
+        } else {
+            // For unrestricted transfers, process immediately
+            await processTransferClaim(tx, selectedAccountId);
+        }
+    };
+
+    const processTransferClaim = async (tx: Transaction, selectedAccountId?: string, userCoordinates?: { latitude: number; longitude: number }) => {
+        if (!user || !selectedAccountId) {
+            alert("Please select a destination account to receive the funds.");
+            setIsClaiming(null);
             return;
         }
 
+        const destinationAccount = accounts.find(acc => acc.id === selectedAccountId);
+        if (!destinationAccount) {
+            alert("Invalid destination account selected.");
+            setIsClaiming(null);
+            return;
+        }
+
+        const supabase = getSupabase();
         setIsClaiming(tx.id);
-        
-        navigator.geolocation.getCurrentPosition(
-            async (position) => {
-                const { latitude, longitude } = position.coords;
-                const supabase = getSupabase();
-                try {
-                    const { error } = await supabase.functions.invoke('claim-transaction', {
-                        body: { transactionId: tx.id, userCoordinates: { latitude, longitude } },
-                    });
 
-                    if (error) {
-                        // The function will return a specific error message
-                        throw new Error(error.message || 'The backend function returned an error.');
-                    }
-                    
-                    alert('Transaction claimed successfully!');
-                    await fetchData();
+        try {
+            console.log('🏦 Processing bank transfer claim...', {
+                transactionId: tx.id,
+                fromAccount: tx.from_account_id,
+                toAccount: selectedAccountId,
+                amount: tx.amount,
+                hasGeoRestriction: !!tx.geoFence,
+                hasTimeRestriction: !!tx.timeRestriction
+            });
 
-                } catch (err: any) {
-                     // Catching errors from the invoke call itself or thrown from the function
-                    const detail = err.context?.details ? JSON.parse(err.context.details).error : err.message;
-                    alert(`Claim failed: ${detail}`);
-                } finally {
-                    setIsClaiming(null);
-                }
-            },
-            (error) => {
-                alert(`Could not get your location: ${error.message}`);
-                setIsClaiming(null);
-            },
-            { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
-        );
+            // Call bank transfer function
+            const { data, error } = await supabase.functions.invoke('process-bank-transfer', {
+                body: { 
+                    transactionId: tx.id,
+                    destinationAccountId: selectedAccountId,
+                    userCoordinates: userCoordinates // Only present for restricted transfers
+                },
+            });
+
+            if (error) {
+                throw new Error(error.message || 'The backend function returned an error.');
+            }
+            
+            if (data.success) {
+                alert(`🎉 Transfer completed! $${tx.amount} has been deposited to your ${destinationAccount.name} account.`);
+                await fetchData();
+            } else {
+                throw new Error(data.message || 'Transfer failed');
+            }
+
+        } catch (err: any) {
+            const detail = err.context?.details ? JSON.parse(err.context.details).error : err.message;
+            alert(`Transfer failed: ${detail}`);
+        } finally {
+            setIsClaiming(null);
+        }
     };
 
     const handleRequestMoney = async (to: string, amount: number, description: string) => {
         if (!user || !user.email) return;
         const supabase = getSupabase();
         try {
-            const { error } = await supabase.from('transactions').insert({
-                user_id: user.id,
-                from_details: user.email,
-                to_details: to,
-                amount: amount,
-                description: description,
-                type: 'request',
-                status: 'Pending',
+            const { data, error } = await supabase.functions.invoke('create-transaction', {
+                body: {
+                    to,
+                    amount,
+                    description,
+                    kind: 'request'
+                }
             });
-            if (error) throw error;
+
+            console.log('Create request response:', { data, error });
+
+            if (error) {
+                console.error('❌ Function invocation error:', error);
+                throw new Error(`Function error: ${error.message || JSON.stringify(error)}`);
+            }
+
+            if (data && data.success === false) {
+                console.error('❌ Function returned error:', data);
+                const errorMsg = data.error || data.details || 'Unknown function error';
+                throw new Error(`Request creation failed: ${JSON.stringify(errorMsg)}`);
+            }
+
+            if (!data || !data.success) {
+                console.error('❌ Unexpected response format:', data);
+                throw new Error(`Unexpected response: ${JSON.stringify(data)}`);
+            }
             await fetchData();
             setActiveTab('history');
         } catch (error: any)
@@ -570,6 +777,8 @@ const App: React.FC = () => {
                         const acc = accounts.find(a => a.id === accountId);
                         if (acc) setAccountToRemove(acc);
                     }}
+                    onRefreshBalances={handleRefreshBalances}
+                    isRefreshing={isRefreshingBalances}
                 />
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 p-2 bg-black/20 rounded-xl">
@@ -592,6 +801,7 @@ const App: React.FC = () => {
                             onDeclineRequest={handleDeclineRequest}
                             onClaimTransaction={handleClaimTransaction}
                             isClaimingId={isClaiming}
+                            accounts={accounts}
                         />
                     )}
                 </div>
@@ -618,6 +828,7 @@ const App: React.FC = () => {
                 isOpen={isConnectAccountModalOpen} 
                 onClose={() => setIsConnectAccountModalOpen(false)} 
                 onConnectionSuccess={handleConnectionSuccess}
+                user={user}
             />
 
             <TransactionDetailModal

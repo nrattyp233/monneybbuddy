@@ -6,8 +6,9 @@
 import { serve } from "https://deno.land/std@0.224.0/http/server.ts";
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
-// Use existing Supabase service role & URL secrets (already configured) for authentication.
-// Production: implement pgcrypto-based encryption for access tokens stored in access_token_enc column.
+// Use existing Supabase service role & URL secrets (already configured) – no extra encryption key yet.
+// We temporarily store the raw Plaid access token in access_token_enc column (misnamed) until encryption is added.
+// TODO: Replace with pgcrypto-based encryption (pgp_sym_encrypt) and rename column to access_token_ciphertext.
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL');
 const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
@@ -35,7 +36,7 @@ interface PlaidAccountsGetResponse {
 
 const PLAID_CLIENT_ID = Deno.env.get('PLAID_CLIENT_ID');
 const PLAID_SECRET = Deno.env.get('PLAID_SECRET');
-const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'production';
+const PLAID_ENV = Deno.env.get('PLAID_ENV') || 'sandbox';
 const RAW_ALLOWED_ORIGIN = Deno.env.get('ALLOWED_ORIGIN') || '*';
 const NORMALIZED_ALLOWED_ORIGIN = RAW_ALLOWED_ORIGIN.endsWith('/') && RAW_ALLOWED_ORIGIN !== '*' ? RAW_ALLOWED_ORIGIN.slice(0, -1) : RAW_ALLOWED_ORIGIN;
 
@@ -43,21 +44,13 @@ const PLAID_BASE = {
   sandbox: 'https://sandbox.plaid.com',
   development: 'https://development.plaid.com',
   production: 'https://production.plaid.com'
-}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://production.plaid.com';
+}[PLAID_ENV as 'sandbox' | 'development' | 'production'] || 'https://sandbox.plaid.com';
 
 function buildCors(originHeader: string | null) {
   let allowOrigin = NORMALIZED_ALLOWED_ORIGIN;
   if (NORMALIZED_ALLOWED_ORIGIN !== '*' && originHeader) {
     const normalizedIncoming = originHeader.endsWith('/') ? originHeader.slice(0, -1) : originHeader;
     if (normalizedIncoming === NORMALIZED_ALLOWED_ORIGIN) {
-      allowOrigin = normalizedIncoming;
-    }
-    // Allow any Netlify deploy preview URL for moneybuddygeo
-    else if (normalizedIncoming.includes('moneybuddygeo.netlify.app')) {
-      allowOrigin = normalizedIncoming;
-    }
-    // Allow localhost for development
-    else if (normalizedIncoming.includes('localhost') || normalizedIncoming.includes('127.0.0.1')) {
       allowOrigin = normalizedIncoming;
     }
   }
@@ -75,13 +68,8 @@ serve(async (req) => {
   }
 
   if (!PLAID_CLIENT_ID || !PLAID_SECRET) {
-    return new Response(JSON.stringify({ 
-      success: false,
-      error: 'Plaid credentials not configured on server.',
-      needsServerConfig: true,
-      guidance: 'Add PLAID_CLIENT_ID and PLAID_SECRET as Supabase project secrets.'
-    }), {
-      status: 200,
+    return new Response(JSON.stringify({ error: 'Plaid credentials not configured on server.' }), {
+      status: 500,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
@@ -101,20 +89,11 @@ serve(async (req) => {
           const payload = JSON.parse(payloadRaw);
           if (payload.sub && typeof payload.sub === 'string') {
             userId = payload.sub;
-            console.log(`🔑 Exchange function: Extracted user ID from JWT: ${userId}`);
           }
         } catch (e) {
           console.warn('Could not parse JWT payload for user id:', e);
         }
       }
-    }
-    
-    if (!userId) {
-      console.error('❌ Exchange function: No user ID found in request');
-      return new Response(JSON.stringify({ error: 'Authentication required' }), {
-        status: 401,
-        headers: buildCors(originHeader)
-      });
     }
     if (!body.public_token) {
       return new Response(JSON.stringify({ error: 'public_token missing' }), {
@@ -136,14 +115,8 @@ serve(async (req) => {
     if (!exchangeRes.ok) {
       const text = await exchangeRes.text();
       console.error('Plaid exchange error:', { status: exchangeRes.status, body: text });
-      return new Response(JSON.stringify({ 
-        success: false,
-        error: 'Failed to exchange public token', 
-        plaidStatus: exchangeRes.status, 
-        details: text,
-        needsReconnection: exchangeRes.status === 401 || exchangeRes.status === 403
-      }), {
-        status: 200,
+      return new Response(JSON.stringify({ error: 'Failed to exchange public token', status: exchangeRes.status, details: text }), {
+        status: 500,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
@@ -164,20 +137,13 @@ serve(async (req) => {
     if (!accountsRes.ok) {
       const aText = await accountsRes.text();
       console.error('Plaid accounts/get error:', { status: accountsRes.status, body: aText });
-      return new Response(JSON.stringify({ 
-        success: false,
-        error: 'Failed to fetch accounts', 
-        plaidStatus: accountsRes.status, 
-        details: aText,
-        needsReconnection: accountsRes.status === 401 || accountsRes.status === 403
-      }), {
-        status: 200,
+      return new Response(JSON.stringify({ error: 'Failed to fetch accounts', status: accountsRes.status, details: aText }), {
+        status: 500,
         headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
       });
     }
 
     const accountsData = await accountsRes.json() as PlaidAccountsGetResponse;
-    
 
     // ---- Map Plaid accounts to internal representation ----
     const mappedAccounts = accountsData.accounts.map(a => ({
@@ -242,65 +208,40 @@ serve(async (req) => {
             throw acctErr;
           }
 
-          // Find existing account by checking both user_id and a unique identifier
-          // First, get the plaid_account record to link to the main accounts table
-          const { data: plaidAccount, error: plaidAcctErr } = await supabaseAdmin
-            .from('plaid_accounts')
-            .select('plaid_account_id')
-            .eq('user_id', userId)
-            .eq('plaid_account_id', a.account_id)
-            .maybeSingle();
-          
-          if (plaidAcctErr) {
-            console.error(`Error finding plaid_account ${a.account_id}:`, plaidAcctErr);
-            throw plaidAcctErr;
-          }
-
-          // Look for existing account in main accounts table using a more specific match
+          // Find existing by plaid_account_id mapping stored in plaid_accounts then join to accounts by (user_id,name,provider,type)
           const { data: existingAccounts, error: listErr } = await supabaseAdmin
             .from('accounts')
-            .select('id,name,external_id')
+            .select('id,name')
             .eq('user_id', userId)
-            .eq('name', mapped.name)
-            .eq('provider', 'Plaid');
-          
+            .eq('name', mapped.name);
           if (listErr) {
             console.error(`Error finding existing account ${mapped.name}:`, listErr);
             throw listErr;
           }
 
-          // Check if we have an account that matches this specific Plaid account
-          const existingAccount = existingAccounts?.find(acc => 
-            acc.external_id === a.account_id || 
-            (acc.name === mapped.name && !acc.external_id)
-          );
-
-          if (!existingAccount) {
-            console.log(`Creating new account record for user ${userId}: ${mapped.name} (${a.account_id})`);
+          if (!existingAccounts || existingAccounts.length === 0) {
+            console.log(`Creating new account record for: ${mapped.name}`);
             const { error: insertMirrorErr } = await supabaseAdmin.from('accounts').insert({
               user_id: userId,
               name: mapped.name,
               provider: mapped.provider,
               type: mapped.type,
-              balance: mapped.balance,
-              external_id: a.account_id, // Store Plaid account ID for future reference
-              account_status: 'active' // Always mark Plaid accounts as active
+              balance: mapped.balance
             });
             if (insertMirrorErr) {
               console.error(`Error inserting new account ${mapped.name}:`, insertMirrorErr);
               throw insertMirrorErr;
             }
           } else {
-            console.log(`Updating existing account record for user ${userId}: ${mapped.name} with balance: ${mapped.balance}`);
+            console.log(`Updating existing account record for: ${mapped.name} with balance: ${mapped.balance}`);
+            const existing = existingAccounts[0];
             const { error: updateMirrorErr } = await supabaseAdmin.from('accounts')
               .update({ 
                 balance: mapped.balance,
                 provider: mapped.provider,
-                type: mapped.type,
-                external_id: a.account_id, // Ensure external_id is set
-                account_status: 'active' // Always mark Plaid accounts as active
+                type: mapped.type
               })
-              .eq('id', existingAccount.id)
+              .eq('id', existing.id)
               .eq('user_id', userId);
             if (updateMirrorErr) {
               console.error(`Error updating account ${mapped.name}:`, updateMirrorErr);
@@ -314,7 +255,6 @@ serve(async (req) => {
       }
     }
 
-    
     return new Response(JSON.stringify({
       success: true,
       item_id: exchangeData.item_id,
@@ -327,12 +267,8 @@ serve(async (req) => {
     });
   } catch (e) {
     console.error('Unhandled error exchanging public token:', e);
-    return new Response(JSON.stringify({ 
-      success: false,
-      error: 'Server exception exchanging public token', 
-      details: String(e) 
-    }), {
-      status: 200,
+    return new Response(JSON.stringify({ error: 'Server exception exchanging public token', details: String(e) }), {
+      status: 500,
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }

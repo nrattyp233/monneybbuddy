@@ -136,16 +136,14 @@ serve(async (req) => {
     }
 
     const captureData = await captureResponse.json() as PayPalCaptureResponse;
-    
-    // Create response with capture data
-    const responseData = {
-      success: true,
+    console.log('🎉 PayPal order captured successfully!', {
       captureId: captureData.id,
       status: captureData.status
-    };
+    });
 
     // Update transaction status in database if we have Supabase access
     if (supabaseAdmin && user_id) {
+      console.log('💾 Updating transaction status in database...');
       const { error: updateError } = await supabaseAdmin
         .from('transactions')
         .update({ 
@@ -158,15 +156,12 @@ serve(async (req) => {
       if (updateError) {
         console.error('⚠️ Failed to update transaction status:', updateError);
         // Don't fail the capture if DB update fails
+      } else {
+        console.log('✅ Transaction status updated in database');
       }
     }
 
     const captureInfo = captureData.purchase_units[0]?.payments?.captures[0];
-    
-    return new Response(JSON.stringify(responseData), {
-      status: 200,
-      headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
-    });
 
     return new Response(JSON.stringify({ 
       success: true,

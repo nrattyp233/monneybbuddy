@@ -104,6 +104,7 @@ serve(async (req) => {
     // Get PayPal access token
     console.log('🔑 Getting PayPal access token...');
     const accessToken = await getPayPalAccessToken();
+    console.log('✅ PayPal access token obtained');
 
     // Calculate total amount (amount + fee)
     const totalAmount = (parseFloat(amount) + parseFloat(fee || '0')).toFixed(2);
@@ -162,7 +163,13 @@ serve(async (req) => {
     const orderData = await orderResponse.json() as PayPalOrderResponse;
     const approvalLink = orderData.links.find(link => link.rel === 'approve');
 
-    return new Response(JSON.stringify({
+    console.log('🎉 PayPal order created successfully!', {
+      orderId: orderData.id,
+      status: orderData.status,
+      approvalUrl: approvalLink?.href
+    });
+
+    return new Response(JSON.stringify({ 
       success: true,
       orderId: orderData.id,
       approval_url: approvalLink?.href,

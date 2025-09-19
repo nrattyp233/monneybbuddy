@@ -47,14 +47,6 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
         }
     }, [amount]);
 
-    // Update fromAccountId when accounts change
-    useEffect(() => {
-        if (accounts.length > 0 && !accounts.find(acc => acc.id === fromAccountId)) {
-            const firstUsable = accounts.find(acc => acc.balance !== null && acc.account_status !== 'disconnected');
-            setFromAccountId(firstUsable ? firstUsable.id : accounts[0].id);
-        }
-    }, [accounts, fromAccountId]);
-
     // State for map
     const [locationQuery, setLocationQuery] = useState('');
     const [mapCenter, setMapCenter] = useState<[number, number]>([40.7128, -74.0060]); // Default: NYC
@@ -156,33 +148,15 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                         <label htmlFor="fromAccount" className="block text-sm font-medium text-gray-300 mb-1">From Account</label>
                         <select id="fromAccount" name="fromAccount" value={fromAccountId} onChange={(e) => setFromAccountId(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition">
                             {accounts.map(acc => (
-                                <option key={acc.id} value={acc.id} disabled={acc.balance === null || acc.account_status === 'disconnected'}>
-                                    {acc.name} ({acc.provider}) - {acc.balance !== null ? `$${acc.balance.toFixed(2)}` : 'Balance N/A'} 
-                                    {acc.is_default_send ? ' [Default Send]' : ''}
-                                    {acc.account_status === 'disconnected' ? ' [Disconnected]' : ''}
+                                <option key={acc.id} value={acc.id} disabled={acc.balance === null}>
+                                    {acc.name} - {acc.balance !== null ? `$${acc.balance.toFixed(2)}` : 'Balance N/A'}
                                 </option>
                             ))}
                         </select>
                     </div>
                      <div>
                         <label htmlFor="amount" className="block text-sm font-medium text-gray-300 mb-1">Amount ($)</label>
-                        <input 
-                            type="text" 
-                            inputMode="decimal" 
-                            id="amount" 
-                            name="amount" 
-                            value={amount} 
-                            onChange={e => {
-                                const value = e.target.value;
-                                // Only allow positive numbers and decimals
-                                if (value === '' || /^\d*\.?\d*$/.test(value)) {
-                                    setAmount(value);
-                                }
-                            }} 
-                            placeholder="0.00" 
-                            autoComplete="transaction-amount" 
-                            className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" 
-                        />
+                        <input type="number" id="amount" name="amount" value={amount} onChange={e => setAmount(e.target.value)} placeholder="0.00" autoComplete="transaction-amount" className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition" />
                     </div>
                 </div>
                  <div>
