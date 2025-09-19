@@ -360,44 +360,22 @@ const App: React.FC = () => {
         const supabase = getSupabase();
     
         try {
-            // --- ALL TRANSFERS ARE REAL PAYPAL TRANSFERS ---
-            console.log('🚀 Starting real PayPal transfer...', { amount, fee, to, description, geoFence, timeRestriction });
+            // --- ALL TRANSFERS ARE NOW BANK-TO-BANK PENDING TRANSFERS ---
+            console.log('🚀 Creating bank-to-bank transfer...', { fromAccount: fromAccount.name, to, amount, fee, description, geoFence, timeRestriction });
             
-            const { data: orderData, error: orderError } = await supabase.functions.invoke('create-paypal-order', {
-                body: { 
-                    amount: amount.toFixed(2), 
-                    fee: fee.toFixed(2),
-                    recipient_email: to, 
-                    description,
-                    geo_fence: geoFence,
-                    time_restriction: timeRestriction
-                },
-            });
-
-            if (orderError) {
-                console.error('❌ PayPal order creation failed:', orderError);
-                throw orderError;
-            }
-            
-            console.log('✅ PayPal order created:', orderData);
-            const { orderId, approval_url, success } = orderData;
-            
-            if (!success || !orderId || !approval_url) {
-                throw new Error("Failed to create PayPal order - missing required data");
-            }
-
-            // Create pending transaction record BEFORE PayPal approval
+            // Create pending transaction record - recipient will choose destination account
             const { error: insertError } = await supabase.from('transactions').insert({
                 user_id: user.id,
                 from_details: user.email,
                 to_details: to,
+                from_account_id: fromAccountId,
+                // to_account_id will be set when recipient accepts
                 amount: amount,
                 fee: fee,
                 description: description,
                 type: 'send',
                 status: 'Pending',
-                paypal_order_id: orderId,
-                payment_method: 'paypal',
+                transfer_method: 'bank_transfer',
                 geo_fence: geoFence,
                 time_restriction: timeRestriction
             });
@@ -407,75 +385,11 @@ const App: React.FC = () => {
                 throw insertError;
             }
 
-            console.log('💳 Opening PayPal checkout window...');
-            // Open PayPal approval URL in new window
-            const paypalWindow = window.open(approval_url, 'paypal-checkout', 'width=600,height=700,scrollbars=yes');
-            
-            if (!paypalWindow) {
-                throw new Error('Failed to open PayPal checkout window. Please allow popups and try again.');
-            }
+            console.log('✅ Pending transfer created successfully');
+            alert(`💰 Transfer request sent to ${to}! They will receive a notification to accept the transfer and choose their destination account.`);
+            await fetchData(); // Refresh to show pending transaction
+            setActiveTab('history');
 
-            // Monitor PayPal window completion
-            const checkInterval = setInterval(async () => {
-                try {
-                    if (paypalWindow.closed) {
-                        clearInterval(checkInterval);
-                        console.log('🔄 PayPal window closed, capturing payment...');
-
-                        // Capture the PayPal payment
-                        const { data: captureData, error: captureError } = await supabase.functions.invoke('capture-paypal-order', {
-                            body: { 
-                                order_id: orderId,
-                                user_id: user.id
-                            }
-                        });
-
-                        if (captureError) {
-                            console.error('❌ PayPal capture failed:', captureError);
-                            // Update transaction status to failed
-                            await supabase.from('transactions')
-                                .update({ status: 'Failed' })
-                                .eq('paypal_order_id', orderId);
-                            
-                            alert('❌ Payment failed. Please try again.');
-                            return;
-                        }
-
-                        console.log('🎉 PayPal payment captured successfully:', captureData);
-                        
-                        if (captureData.success) {
-                            // Update transaction status to completed
-                            await supabase.from('transactions')
-                                .update({ 
-                                    status: 'Completed',
-                                    external_transaction_id: captureData.transaction_id
-                                })
-                                .eq('paypal_order_id', orderId);
-
-                            const restrictionText = geoFence || timeRestriction ? ' (with restrictions applied)' : '';
-                            alert(`🎉 $${amount} successfully sent to ${to} via PayPal${restrictionText}!`);
-                            await fetchData(); // Refresh to show completed transaction
-                            setActiveTab('history');
-                        } else {
-                            alert('⚠️ Payment status unclear. Please check your PayPal account.');
-                        }
-                    }
-                } catch (error) {
-                    console.error('Error in PayPal completion check:', error);
-                    clearInterval(checkInterval);
-                }
-            }, 2000); // Check every 2 seconds
-
-            // Timeout after 10 minutes
-            setTimeout(() => {
-                clearInterval(checkInterval);
-                if (paypalWindow && !paypalWindow.closed) {
-                    paypalWindow.close();
-                    console.log('⏰ PayPal checkout timed out');
-                }
-            }, 600000); // 10 minutes
-
-            console.log('⏳ Waiting for PayPal approval...');
         } catch (error: any) {
             console.error("Error sending money:", error);
             alert(`Failed to send payment. Reason: ${error.message || 'An unknown error occurred.'}`);

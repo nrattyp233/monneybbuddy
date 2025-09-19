@@ -155,8 +155,10 @@ const SendMoney: React.FC<SendMoneyProps> = ({ accounts, onSend }) => {
                         <label htmlFor="fromAccount" className="block text-sm font-medium text-gray-300 mb-1">From Account</label>
                         <select id="fromAccount" name="fromAccount" value={fromAccountId} onChange={(e) => setFromAccountId(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-md p-3 focus:ring-lime-400 focus:border-lime-400 transition">
                             {accounts.map(acc => (
-                                <option key={acc.id} value={acc.id} disabled={acc.balance === null}>
-                                    {acc.name} - {acc.balance !== null ? `$${acc.balance.toFixed(2)}` : 'Balance N/A'}
+                                <option key={acc.id} value={acc.id} disabled={acc.balance === null || acc.account_status !== 'active'}>
+                                    {acc.name} ({acc.provider}) - {acc.balance !== null ? `$${acc.balance.toFixed(2)}` : 'Balance N/A'} 
+                                    {acc.is_default_send ? ' [Default Send]' : ''}
+                                    {acc.account_status !== 'active' ? ' [Disconnected]' : ''}
                                 </option>
                             ))}
                         </select>

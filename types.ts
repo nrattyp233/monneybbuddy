@@ -5,6 +5,12 @@ export interface Account {
   type: string; // 'checking', 'savings', etc.
   balance: number | null;
   logo?: string; // Optional: base64 data URI
+  is_default_send?: boolean; // Default account for sending money
+  is_default_receive?: boolean; // Default account for receiving money
+  account_status?: string; // 'active', 'inactive', 'disconnected'
+  plaid_account_id?: string; // Plaid account ID for bank transfers
+  routing_number?: string; // Bank routing number
+  account_number_masked?: string; // Masked account number for display
 }
 
 export enum TransactionStatus {
@@ -31,8 +37,10 @@ export interface Transaction {
   id: string;
   type: 'send' | 'receive' | 'lock' | 'penalty' | 'request' | 'fee';
   amount: number;
-  from_details: string;
-  to_details: string;
+  from_details: string; // Email for backward compatibility
+  to_details: string; // Email for backward compatibility  
+  from_account_id?: string; // Source bank account ID
+  to_account_id?: string; // Destination bank account ID
   date: Date;
   status: TransactionStatus;
   geoFence?: GeoFence;
@@ -40,6 +48,7 @@ export interface Transaction {
   description: string;
   paypal_order_id?: string;
   fee?: number;
+  transfer_method?: string; // 'paypal', 'ach', 'wire'
 }
 
 export interface LockedSaving {
