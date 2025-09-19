@@ -59,7 +59,24 @@ const App: React.FC = () => {
 
         const { data: authListener } = supabase.auth.onAuthStateChange(
             (_event, session) => {
-                setUser(session?.user ?? null);
+                const newUser = session?.user ?? null;
+                const currentUserId = user?.id;
+                const newUserId = newUser?.id;
+                
+                setUser(newUser);
+                
+                // Clear all data when user logs out OR when a different user logs in
+                if (!newUser || (currentUserId && newUserId && currentUserId !== newUserId)) {
+                    const reason = !newUser ? 'User logged out' : 'Different user logged in';
+                    console.log(`${reason} - clearing all data (was: ${currentUserId}, now: ${newUserId})`);
+                    setAccounts([]);
+                    setTransactions([]);
+                    setLockedSavings([]);
+                    setSelectedTransaction(null);
+                    setAccountToRemove(null);
+                    setIsClaiming(null);
+                    setRefreshError(null);
+                }
             }
         );
 
