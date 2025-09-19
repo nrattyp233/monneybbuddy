@@ -124,11 +124,25 @@ serve(async (req) => {
         .eq('user_id', userId);
       
       if (error) {
-        console.warn('plaid_items table not found, using fallback approach:', error.message);
-        // Return a basic success response since we can't refresh without stored tokens
+        const msg = error.message || '';
+        console.warn('Error selecting from plaid_items:', msg);
+        const isMissingTable = msg.toLowerCase().includes('relation') && msg.toLowerCase().includes('does not exist')
+          || msg.toLowerCase().includes('42p01');
+        if (isMissingTable) {
+          return new Response(JSON.stringify({ 
+            success: true, 
+            message: 'Database schema setup required. Please run setup-plaid-tables.sql in Supabase SQL Editor.',
+            updatedAccounts: 0,
+            needsSetup: true
+          }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
+          });
+        }
+        // Other errors: surface as guidance without failing
         return new Response(JSON.stringify({ 
           success: true, 
-          message: 'Balance refresh requires re-connecting your bank accounts. Please disconnect and reconnect your accounts in settings.',
+          message: 'Could not access stored Plaid tokens. You may need to reconnect once.',
           updatedAccounts: 0,
           needsReconnection: true
         }), {
