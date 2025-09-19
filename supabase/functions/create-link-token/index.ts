@@ -118,7 +118,6 @@ serve(async (req) => {
       products: ['auth', 'transactions']  // Reduced products for production compatibility
     };
 
-    console.log(`🔄 Creating Plaid link token for user ${clientUserId} in ${PLAID_ENV} environment`);
 
     const plaidRes = await fetch(`${PLAID_BASE}/link/token/create`, {
       method: 'POST',
@@ -185,7 +184,6 @@ serve(async (req) => {
 
     const data = await plaidRes.json() as PlaidLinkTokenCreateResponse;
     
-    console.log(`✅ Successfully created Plaid link token in ${PLAID_ENV} environment`);
     
     return new Response(JSON.stringify({ 
       link_token: data.link_token, 

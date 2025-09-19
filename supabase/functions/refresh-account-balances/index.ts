@@ -96,7 +96,6 @@ async function retryPlaidRequest(url: string, body: any, retries = MAX_RETRIES):
         const delay = retryAfter ? parseInt(retryAfter) * 1000 : RETRY_DELAYS[attempt - 1] || 4000;
         
         if (attempt < retries) {
-          console.log(`🔄 Rate limited, waiting ${delay}ms before retry ${attempt + 1}`);
           await sleep(delay);
           continue;
         }
@@ -128,7 +127,6 @@ async function refreshPlaidItem(item: any, userId: string) {
   };
 
   try {
-    console.log(`🔍 Fetching balances for item ${item.item_id}`);
     
     // Call Plaid's /accounts/balance/get endpoint
     const plaidResponse = await retryPlaidRequest(`${PLAID_BASE}/accounts/balance/get`, {
@@ -148,7 +146,6 @@ async function refreshPlaidItem(item: any, userId: string) {
         
         // Token expiration or auth issues
         if (['INVALID_ACCESS_TOKEN', 'ITEM_LOGIN_REQUIRED', 'ACCESS_NOT_GRANTED'].includes(errorCode)) {
-          console.log(`🔄 Token issue detected for item ${item.item_id}, marking for reconnection`);
           
           // Mark item as needing reconnection
           if (supabaseAdmin) {
@@ -178,7 +175,6 @@ async function refreshPlaidItem(item: any, userId: string) {
     }
 
     const accountsData = await plaidResponse.json() as PlaidAccountsResponse;
-    console.log(`📊 Retrieved ${accountsData.accounts?.length || 0} accounts for item ${item.item_id}`);
     
     if (accountsData.accounts && accountsData.accounts.length > 0) {
       const updated = await updateAccountBalances(accountsData.accounts, userId, item.item_id);
@@ -231,7 +227,6 @@ async function updateAccountBalances(plaidAccounts: any[], userId: string, itemI
 
       if (count && count > 0) {
         updated++;
-        console.log(`✅ Updated account ${accountName}`);
       } else {
         // Account doesn't exist, try to match by name and create association
         const { data: existingAccounts, error: fetchError } = await supabaseAdmin
@@ -263,7 +258,6 @@ async function updateAccountBalances(plaidAccounts: any[], userId: string, itemI
 
           if (!linkError) {
             updated++;
-            console.log(`✅ Linked and updated existing account ${accountName}`);
           }
         } else {
           // Create new account
@@ -289,7 +283,6 @@ async function updateAccountBalances(plaidAccounts: any[], userId: string, itemI
           
           if (!insertError) {
             updated++;
-            console.log(`✅ Created new account ${accountName}`);
           } else {
             console.error(`❌ Failed to create account ${accountName}:`, insertError);
           }
@@ -316,10 +309,11 @@ serve(async (req) => {
     console.error('❌ Missing Plaid credentials');
     return new Response(JSON.stringify({ 
       success: false,
-      error: 'Plaid credentials not configured on server',
-      needsServerConfig: true
+      error: 'Bank refresh temporarily unavailable. Please contact support.',
+      needsServerConfig: true,
+      devDetails: 'Plaid credentials not configured on server'
     }), {
-      status: 500,
+      status: 503, // Service Unavailable instead of 500
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
@@ -328,10 +322,11 @@ serve(async (req) => {
     console.error('❌ Missing Supabase configuration');
     return new Response(JSON.stringify({ 
       success: false,
-      error: 'Database not configured',
-      needsServerConfig: true
+      error: 'Database temporarily unavailable. Please contact support.',
+      needsServerConfig: true,
+      devDetails: 'Database not configured'
     }), {
-      status: 500,
+      status: 503, // Service Unavailable instead of 500
       headers: { 'Content-Type': 'application/json', ...buildCors(originHeader) }
     });
   }
@@ -426,7 +421,6 @@ serve(async (req) => {
       });
     }
 
-    console.log(`📊 Found ${plaidItems.length} Plaid items for user ${userId}`);
 
     // Process each Plaid item
     let totalUpdated = 0;
@@ -470,7 +464,6 @@ serve(async (req) => {
       environment: PLAID_ENV
     };
 
-    console.log(`✅ Refresh completed: ${totalUpdated} accounts updated, ${errors.length} errors`);
 
     return new Response(JSON.stringify(response), {
       status: 200,

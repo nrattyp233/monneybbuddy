@@ -160,7 +160,8 @@ serve(async (req) => {
       fee: transaction.fee
     });
 
-    // TODO: Implement actual Plaid transfer logic here
+    // Production implementation would integrate with Plaid Transfer API
+    // For now, we simulate the transfer completion
     // For now, we'll simulate the transfer by updating balances
     
     // Update source account balance (deduct amount + fee)
@@ -203,7 +204,6 @@ serve(async (req) => {
       throw new Error('Failed to update transaction status');
     }
 
-    console.log('✅ Bank transfer completed successfully');
 
     return new Response(JSON.stringify({ 
       success: true, 

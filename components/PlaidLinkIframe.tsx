@@ -162,15 +162,12 @@ const PlaidLinkIframe: React.FC<PlaidLinkIframeProps> = ({
             
             switch (type) {
                 case 'PLAID_READY':
-                    console.log(`✅ Plaid iframe ready for user: ${user.id}`);
                     setIsReady(true);
                     break;
                 case 'PLAID_SUCCESS':
-                    console.log(`🎉 Plaid success for user: ${user.id}`);
                     onSuccess(publicToken);
                     break;
                 case 'PLAID_EXIT':
-                    console.log(`🚪 Plaid exit for user: ${user.id}`);
                     onExit(error, metadata);
                     break;
                 case 'PLAID_EVENT':

@@ -52,7 +52,6 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
             setLinkToken(null); // Clear any existing token
             
             try {
-                console.log(`Creating fresh Plaid link token for user: ${user.id}`);
                 const supabase = getSupabase();
                 const { data, error: funcError } = await supabase.functions.invoke('create-link-token', {
                     body: { 
@@ -67,7 +66,6 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 if (!data || !data.link_token) {
                     throw new Error("Failed to retrieve a link token from the server.");
                 }
-                console.log(`Successfully created link token for user: ${user.id}`);
                 setLinkToken(data.link_token);
             } catch (err: any) {
                 handleFunctionError(err, 'token creation');
@@ -80,12 +78,10 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
     }, [isOpen, user]);
 
     const onSuccess = useCallback(async (public_token: string) => {
-        console.log(`🔄 Plaid onSuccess called for user: ${user?.id} with public_token: ${public_token.slice(0, 20)}...`);
         setIsLoading(true);
         setError(null);
         try {
             const supabase = getSupabase();
-            console.log(`📤 Calling exchange-public-token for user: ${user?.id}`);
             const { data, error: funcError } = await supabase.functions.invoke('exchange-public-token', {
                 body: { public_token },
             });
@@ -102,7 +98,6 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 throw new Error('Plaid requires re-authorization. Please try connecting again.');
             }
 
-            console.log(`📥 Exchange response for user ${user?.id}:`, {
                 user_id: data?.user_id,
                 accounts_count: data?.accounts?.length || 0,
                 accounts: data?.accounts?.map(a => ({ name: a.name, balance: a.balance })) || [],
@@ -111,7 +106,6 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
             
             // If backend persistence failed, fall back to inserting accounts client-side.
             if (data && data.accounts && Array.isArray(data.accounts) && data.persisted === false) {
-                console.log(`💾 Backend persistence failed, inserting ${data.accounts.length} accounts client-side for user: ${user?.id}`);
                 for (const acct of data.accounts) {
                     // Try to find existing by name
                     const { data: existing, error: selErr } = await supabase
@@ -144,7 +138,6 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 type: a.type 
             }));
             
-            console.log('Calling onConnectionSuccess with mapped accounts:', mappedAccounts);
             onConnectionSuccess(mappedAccounts);
             onClose();
 
@@ -159,11 +152,9 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         onSuccess,
         onExit: (err, metadata) => {
             if (err != null) {
-                console.log('Plaid Link exited with error:', err);
             }
         },
         onEvent: (eventName, metadata) => {
-            console.log('Plaid Link event:', eventName, metadata);
         },
     });
 

@@ -178,7 +178,6 @@ serve(async (req) => {
 
     const accountsData = await accountsRes.json() as PlaidAccountsGetResponse;
     
-    console.log(`📊 Fetched ${accountsData.accounts.length} accounts from Plaid for user: ${userId}`);
 
     // ---- Map Plaid accounts to internal representation ----
     const mappedAccounts = accountsData.accounts.map(a => ({
@@ -315,7 +314,6 @@ serve(async (req) => {
       }
     }
 
-    console.log(`✅ Returning account data for user: ${userId}, accounts: ${mappedAccounts.length}, persisted: ${persisted}`);
     
     return new Response(JSON.stringify({
       success: true,

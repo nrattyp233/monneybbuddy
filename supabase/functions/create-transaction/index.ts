@@ -20,13 +20,34 @@ serve(async (req) => {
   }
 
   try {
-    // Get user from auth
-    const authHeader = req.headers.get('authorization') || '';
-    const token = authHeader.replace('Bearer ', '');
+    // Get user from JWT token (same method as refresh function)
+    let userId: string | null = null;
+    const authHeader = req.headers.get('authorization');
     
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
-    if (userError || !user) {
-      return new Response(JSON.stringify({ success: false, error: 'Auth failed' }), { 
+    if (authHeader && authHeader.toLowerCase().startsWith('bearer ')) {
+      const token = authHeader.substring(7);
+      const parts = token.split('.');
+      
+      if (parts.length === 3) {
+        try {
+          const payloadRaw = atob(parts[1].replace(/-/g, '+').replace(/_/g, '/'));
+          const payload = JSON.parse(payloadRaw);
+          
+          if (payload.sub && typeof payload.sub === 'string') {
+            userId = payload.sub;
+          }
+        } catch (e) {
+          console.warn('Could not parse JWT payload:', e);
+        }
+      }
+    }
+
+    if (!userId) {
+      return new Response(JSON.stringify({ 
+        success: false, 
+        error: 'Authentication required',
+        needsAuth: true
+      }), { 
         status: 401, headers: { 'Content-Type': 'application/json', ...corsHeaders } 
       });
     }
@@ -43,8 +64,8 @@ serve(async (req) => {
 
     // Create transaction with minimal required fields
     const txData: any = {
-      user_id: user.id,
-      from_details: user.email,
+      user_id: userId,
+      from_details: `User: ${userId}`, // Could be enhanced with actual user email lookup
       to_details: to,
       amount: parseFloat(amount),
       description: description || '',

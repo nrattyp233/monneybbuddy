@@ -16,7 +16,7 @@ import RequestMoney from './components/RequestMoney';
 import TransactionDetailModal from './components/TransactionDetailModal';
 import Auth from './components/Auth';
 import { getSupabase } from './services/supabase';
-import DeveloperSettings from './components/DeveloperSettings';
+
 
 type ActiveTab = 'send' | 'lock' | 'history' | 'request';
 
@@ -68,7 +68,6 @@ const App: React.FC = () => {
                 // Clear all data when user logs out OR when a different user logs in
                 if (!newUser || (currentUserId && newUserId && currentUserId !== newUserId)) {
                     const reason = !newUser ? 'User logged out' : 'Different user logged in';
-                    console.log(`${reason} - clearing all data (was: ${currentUserId}, now: ${newUserId})`);
                     
                     // Clear application state
                     setAccounts([]);
@@ -92,7 +91,7 @@ const App: React.FC = () => {
         const supabase = getSupabase();
 
         try {
-            console.log('🔍 DEBUGGING: Fetching data for user:', user.id, 'email:', user.email); // Debug logging
+            // Fetch all user data
             
             // Get transactions where user is either sender or recipient
             const { data: transactionsData, error: transactionsError } = await supabase
@@ -119,9 +118,7 @@ const App: React.FC = () => {
                 throw savingsRes.error;
             }
 
-            console.log('🔍 DEBUGGING: Raw transactions returned:', transactionsData?.length || 0);
             if (transactionsData && transactionsData.length > 0) {
-                console.log('🔍 DEBUGGING: First few transactions:', transactionsData.slice(0, 3).map(t => ({
                     id: t.id,
                     from: t.from_details,
                     to: t.to_details,
@@ -131,11 +128,8 @@ const App: React.FC = () => {
                 })));
             }
 
-            console.log('Fetched accounts:', accountsRes.data); // Debug logging
             setAccounts(accountsRes.data as Account[]);
             
-            console.log('Raw transactions from DB:', transactionsData?.length, 'transactions');
-            console.log('Transaction details:', transactionsData?.map(t => ({ 
                 id: t.id, 
                 from: t.from_details, 
                 to: t.to_details, 
@@ -190,7 +184,7 @@ const App: React.FC = () => {
             })
             .subscribe((status) => {
                 if (status === 'SUBSCRIBED') {
-                    console.log('✅ Subscribed to account balance updates');
+                    // Account balance subscription established
                 }
             });
 
@@ -204,22 +198,18 @@ const App: React.FC = () => {
         if (!user) return;
 
         const autoRefresh = async () => {
-            console.log('🔄 Auto-refreshing balances...');
+            // Auto-refresh balances
             try {
                 const supabase = getSupabase();
                 const { data, error } = await supabase.functions.invoke('refresh-account-balances');
                 
                 if (!error && data?.success) {
                     if (data.needsReconnection) {
-                        console.log('ℹ️ Auto-refresh: Plaid reconnection needed');
                         setIsConnectAccountModalOpen(true);
                     } else if (data.needsSetup) {
-                        console.log('ℹ️ Auto-refresh: Database setup needed');
                     } else if (data.updatedAccounts > 0) {
-                        console.log(`✅ Auto-refresh: Updated ${data.updatedAccounts} accounts`);
                         await fetchData(); // Only refresh UI if balances actually updated
                     } else {
-                        console.log('ℹ️ Auto-refresh: No accounts to update');
                     }
                 } else {
                     console.warn('⚠️ Auto-refresh failed:', error?.message || 'Unknown error');
@@ -261,7 +251,6 @@ const App: React.FC = () => {
         setLastRefreshTime(now);
         
         try {
-            console.log('🔄 Refreshing account balances...');
             const supabase = getSupabase();
             
             const { data, error } = await supabase.functions.invoke('refresh-account-balances');
@@ -282,7 +271,6 @@ const App: React.FC = () => {
                 return;
             }
             
-            console.log('✅ Balance refresh result:', data);
             
             if (data?.success) {
                 // Clear any previous errors
@@ -295,7 +283,6 @@ const App: React.FC = () => {
                 if (data.rateLimited) {
                     alert(`⏳ Rate limited: ${data.error}. Please try again later.`);
                 } else if (data.needsReconnection) {
-                    console.log('🔄 Server indicates reconnection needed, opening Plaid modal');
                     setIsConnectAccountModalOpen(true);
                     
                     const plaidError = data.plaidError ? ` (${data.plaidError.code}: ${data.plaidError.message})` : '';
@@ -307,7 +294,6 @@ const App: React.FC = () => {
                 } else if (data.needsAuth) {
                     alert('🔐 Authentication required. Please sign in again.');
                 } else if (data.updatedAccounts > 0) {
-                    console.log(`✅ Successfully updated ${data.updatedAccounts} accounts`);
                     // Success - show subtle feedback without modal
                     setRefreshError(null);
                 } else {
@@ -364,7 +350,6 @@ const App: React.FC = () => {
     
         try {
             // NEW SYSTEM: Create pending bank-to-bank transfer
-            console.log('🏦 Creating bank-to-bank transfer...', { 
                 fromAccount: fromAccount.name, 
                 amount, 
                 fee, 
@@ -394,7 +379,6 @@ const App: React.FC = () => {
                 }
             });
 
-            console.log('Create transaction response:', { createTxData, createTxError });
 
             if (createTxError) {
                 console.error('❌ Function invocation error:', createTxError);
@@ -412,7 +396,6 @@ const App: React.FC = () => {
                 throw new Error(`Unexpected response: ${JSON.stringify(createTxData)}`);
             }
 
-            console.log('✅ Pending bank transfer created successfully');
             await fetchData(); // Refresh to show pending transaction
             setActiveTab('history');
             
@@ -485,7 +468,6 @@ const App: React.FC = () => {
         setIsClaiming(tx.id);
 
         try {
-            console.log('🏦 Processing bank transfer claim...', {
                 transactionId: tx.id,
                 fromAccount: tx.from_account_id,
                 toAccount: selectedAccountId,
@@ -535,7 +517,6 @@ const App: React.FC = () => {
                 }
             });
 
-            console.log('Create request response:', { data, error });
 
             if (error) {
                 console.error('❌ Function invocation error:', error);
@@ -645,7 +626,6 @@ const App: React.FC = () => {
     };
 
     const handleConnectionSuccess = async (instantAccounts?: { name: string; balance: number | null; provider: string; type?: string }[]) => {
-        console.log('Connection success with accounts:', instantAccounts); // Debug logging
         
         if (instantAccounts && instantAccounts.length) {
             // Optimistically merge (avoid duplicates by name)
@@ -660,7 +640,6 @@ const App: React.FC = () => {
                     type: a.type || '',
                     balance: a.balance,
                   }));
-                console.log('Adding new accounts:', additions); // Debug logging
                 return [...prev, ...additions];
             });
         }
@@ -668,7 +647,6 @@ const App: React.FC = () => {
         // Always fetch fresh data from the server after connection
         try {
             await fetchData();
-            console.log('Data fetched successfully after Plaid connection');
         } catch (error) {
             console.error('Error fetching data after Plaid connection:', error);
         }
@@ -821,7 +799,7 @@ const App: React.FC = () => {
             </Modal>
             
             <Modal isOpen={isDevSettingsModalOpen} onClose={() => setIsDevSettingsModalOpen(false)} title="Developer Settings & API Guide">
-                <DeveloperSettings currentUserEmail={user.email!} />
+
             </Modal>
 
             <ConnectAccountModal 
