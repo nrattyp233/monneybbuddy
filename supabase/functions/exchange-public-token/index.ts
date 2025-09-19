@@ -93,11 +93,20 @@ serve(async (req) => {
           const payload = JSON.parse(payloadRaw);
           if (payload.sub && typeof payload.sub === 'string') {
             userId = payload.sub;
+            console.log(`🔑 Exchange function: Extracted user ID from JWT: ${userId}`);
           }
         } catch (e) {
           console.warn('Could not parse JWT payload for user id:', e);
         }
       }
+    }
+    
+    if (!userId) {
+      console.error('❌ Exchange function: No user ID found in request');
+      return new Response(JSON.stringify({ error: 'Authentication required' }), {
+        status: 401,
+        headers: buildCors(originHeader)
+      });
     }
     if (!body.public_token) {
       return new Response(JSON.stringify({ error: 'public_token missing' }), {
@@ -160,6 +169,8 @@ serve(async (req) => {
     }
 
     const accountsData = await accountsRes.json() as PlaidAccountsGetResponse;
+    
+    console.log(`📊 Fetched ${accountsData.accounts.length} accounts from Plaid for user: ${userId}`);
 
     // ---- Map Plaid accounts to internal representation ----
     const mappedAccounts = accountsData.accounts.map(a => ({
@@ -271,6 +282,8 @@ serve(async (req) => {
       }
     }
 
+    console.log(`✅ Returning account data for user: ${userId}, accounts: ${mappedAccounts.length}, persisted: ${persisted}`);
+    
     return new Response(JSON.stringify({
       success: true,
       item_id: exchangeData.item_id,

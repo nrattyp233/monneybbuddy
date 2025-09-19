@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { usePlaidLink } from 'react-plaid-link';
 import Modal from './Modal';
 import { Account } from '../types';
 import { PlaidIcon, RefreshCwIcon, AlertTriangleIcon } from './icons';
 import { getSupabase } from '../services/supabase';
 import type { User } from '@supabase/supabase-js';
+import PlaidLinkIframe from './PlaidLinkIframe';
 
 interface ConnectAccountModalProps {
     isOpen: boolean;
@@ -23,26 +23,87 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
     useEffect(() => {
         if (isOpen && user) {
             try {
-                // Clear any Plaid-related storage that might cause cross-user data issues
-                const storageKeys = ['link-result', 'link-account-selecter'];
-                storageKeys.forEach(key => {
+                console.log(`Clearing ALL browser storage for user isolation: ${user.id}`);
+                
+                // 1. Clear localStorage
+                const localStorageKeys = [];
+                for (let i = 0; i < localStorage.length; i++) {
+                    const key = localStorage.key(i);
+                    if (key && (
+                        key.toLowerCase().includes('plaid') || 
+                        key.toLowerCase().includes('link') ||
+                        key.toLowerCase().includes('bank') ||
+                        key.toLowerCase().includes('account') ||
+                        key.toLowerCase().includes('token')
+                    )) {
+                        localStorageKeys.push(key);
+                    }
+                }
+                localStorageKeys.forEach(key => {
+                    console.log(`Clearing localStorage: ${key}`);
                     localStorage.removeItem(key);
+                });
+                
+                // 2. Clear sessionStorage
+                const sessionStorageKeys = [];
+                for (let i = 0; i < sessionStorage.length; i++) {
+                    const key = sessionStorage.key(i);
+                    if (key && (
+                        key.toLowerCase().includes('plaid') || 
+                        key.toLowerCase().includes('link') ||
+                        key.toLowerCase().includes('bank') ||
+                        key.toLowerCase().includes('account') ||
+                        key.toLowerCase().includes('token')
+                    )) {
+                        sessionStorageKeys.push(key);
+                    }
+                }
+                sessionStorageKeys.forEach(key => {
+                    console.log(`Clearing sessionStorage: ${key}`);
                     sessionStorage.removeItem(key);
                 });
                 
-                // Clear any cookies related to Plaid (if accessible)
+                // 3. Clear IndexedDB (if accessible)
+                if (typeof indexedDB !== 'undefined') {
+                    try {
+                        indexedDB.databases().then(databases => {
+                            databases.forEach(db => {
+                                if (db.name && db.name.toLowerCase().includes('plaid')) {
+                                    console.log(`Deleting IndexedDB: ${db.name}`);
+                                    indexedDB.deleteDatabase(db.name);
+                                }
+                            });
+                        }).catch(e => console.warn('Could not clear IndexedDB:', e));
+                    } catch (e) {
+                        console.warn('IndexedDB clearing not supported:', e);
+                    }
+                }
+                
+                // 4. Clear cookies more aggressively
                 if (typeof document !== 'undefined') {
-                    // Clear Plaid-related cookies by setting them to expire
-                    const plaidCookies = ['_plaid_link_session', 'plaid_link'];
-                    plaidCookies.forEach(cookieName => {
-                        document.cookie = `${cookieName}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/; domain=.plaid.com;`;
-                        document.cookie = `${cookieName}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;`;
+                    const allCookies = document.cookie.split(';');
+                    allCookies.forEach(cookie => {
+                        const eqPos = cookie.indexOf('=');
+                        const name = eqPos > -1 ? cookie.substr(0, eqPos).trim() : cookie.trim();
+                        if (name.toLowerCase().includes('plaid') || 
+                            name.toLowerCase().includes('link') ||
+                            name.toLowerCase().includes('bank')) {
+                            console.log(`Clearing cookie: ${name}`);
+                            // Clear for multiple domains and paths
+                            const domains = ['', '.plaid.com', '.cdn.plaid.com', window.location.hostname];
+                            const paths = ['/', '/link'];
+                            domains.forEach(domain => {
+                                paths.forEach(path => {
+                                    document.cookie = `${name}=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=${path}; domain=${domain};`;
+                                });
+                            });
+                        }
                     });
                 }
                 
-                console.log(`Cleared Plaid browser storage for user isolation: ${user.id}`);
+                console.log(`✅ Completed comprehensive storage clearing for user: ${user.id}`);
             } catch (error) {
-                console.warn('Could not clear Plaid browser storage:', error);
+                console.warn('Could not clear browser storage:', error);
             }
         }
     }, [isOpen, user]);
@@ -108,15 +169,20 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
     }, [isOpen, user]);
 
     const onSuccess = useCallback(async (public_token: string) => {
+        console.log(`🔄 Plaid onSuccess called for user: ${user?.id} with public_token: ${public_token.slice(0, 20)}...`);
         setIsLoading(true);
         setError(null);
         try {
             const supabase = getSupabase();
+            console.log(`📤 Calling exchange-public-token for user: ${user?.id}`);
             const { data, error: funcError } = await supabase.functions.invoke('exchange-public-token', {
                 body: { public_token },
             });
 
-            if (funcError) throw funcError;
+            if (funcError) {
+                console.error(`❌ Exchange function error for user ${user?.id}:`, funcError);
+                throw funcError;
+            }
             if (data && data.needsServerConfig) {
                 throw new Error(data.guidance || 'Server needs configuration for Plaid.');
             }
@@ -125,10 +191,16 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
                 throw new Error('Plaid requires re-authorization. Please try connecting again.');
             }
 
-            console.log('Plaid exchange response:', data); // Debug logging
+            console.log(`📥 Exchange response for user ${user?.id}:`, {
+                user_id: data?.user_id,
+                accounts_count: data?.accounts?.length || 0,
+                accounts: data?.accounts?.map(a => ({ name: a.name, balance: a.balance })) || [],
+                persisted: data?.persisted
+            });
             
             // If backend persistence failed, fall back to inserting accounts client-side.
             if (data && data.accounts && Array.isArray(data.accounts) && data.persisted === false) {
+                console.log(`💾 Backend persistence failed, inserting ${data.accounts.length} accounts client-side for user: ${user?.id}`);
                 for (const acct of data.accounts) {
                     // Try to find existing by name
                     const { data: existing, error: selErr } = await supabase
@@ -171,18 +243,17 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
         }
     }, [onConnectionSuccess, onClose]);
     
-    const { open, ready } = usePlaidLink({
-        token: linkToken,
-        onSuccess,
-        onExit: (err, metadata) => {
-            if (err != null) {
-                console.log('Plaid Link exited with error:', err);
-            }
-        },
-        onEvent: (eventName, metadata) => {
-            console.log('Plaid Link event:', eventName, metadata);
-        },
-    });
+    const handlePlaidExit = (err: any, metadata: any) => {
+        if (err != null) {
+            console.log('Plaid Link exited with error:', err);
+        }
+        // Optionally close modal on exit
+        // onClose();
+    };
+    
+    const handlePlaidEvent = (eventName: string, metadata: any) => {
+        console.log('Plaid Link event:', eventName, metadata);
+    };
 
     // Reset state when modal is closed
     useEffect(() => {
@@ -193,70 +264,64 @@ const ConnectAccountModal: React.FC<ConnectAccountModalProps> = ({ isOpen, onClo
             setRawError(null);
         }
     }, [isOpen]);
-    
-    const connectDisabled = !ready || isLoading || !linkToken || !!error;
 
     return (
         <Modal isOpen={isOpen} onClose={onClose} title="Connect Bank Account">
-            <div className="space-y-4 text-center">
+            <div className="space-y-4">
                 
-                                {error && (
-                                        <div className="p-3 bg-red-900/50 border border-red-500/50 rounded-md flex flex-col space-y-2 text-sm text-left">
-                                                <div className="flex items-start space-x-3 text-red-300">
-                                                        <AlertTriangleIcon className="w-8 h-8 flex-shrink-0 mt-0.5"/>
-                                                        <span className="text-red-200 whitespace-pre-wrap">{error}</span>
-                                                </div>
-                                                {rawError && (
-                                                    <details className="bg-black/20 rounded p-2 text-xs text-red-400 whitespace-pre-wrap">
-                                                        <summary className="cursor-pointer text-red-300">Raw error details</summary>
-                                                        {typeof rawError === 'string' ? rawError : JSON.stringify(rawError, null, 2)}
-                                                    </details>
-                                                )}
-                                                <div className="flex justify-end pt-1">
-                                                    <button
-                                                        onClick={() => {
-                                                            setError(null); setRawError(null); setIsLoading(true); setLinkToken(null);
-                                                            // retry fetching link token
-                                                            const supabase = getSupabase();
-                                                            supabase.functions.invoke('create-link-token')
-                                                                .then(({ data, error: funcError }) => {
-                                                                    if (funcError || !data?.link_token) {
-                                                                        handleFunctionError(funcError || new Error('Failed to retrieve a link token on retry'), 'token creation');
-                                                                    } else {
-                                                                        setLinkToken(data.link_token);
-                                                                    }
-                                                                })
-                                                                .finally(() => setIsLoading(false));
-                                                        }}
-                                                        className="px-3 py-1 text-xs rounded bg-red-700 hover:bg-red-600 text-white"
-                                                    >Retry</button>
-                                                </div>
-                                        </div>
-                                )}
-
-                <div className="pt-4">
-                    <button 
-                        onClick={() => open()} 
-                        disabled={connectDisabled}
-                        className="w-full bg-gray-800 hover:bg-gray-700 border border-gray-600 text-white font-bold py-3 px-4 rounded-lg transition-colors flex items-center justify-center space-x-3 disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                        {isLoading ? (
-                            <>
-                                <RefreshCwIcon className="w-5 h-5 animate-spin"/>
-                                <span>Initializing...</span>
-                            </>
-                        ) : (
-                             <>
-                                <PlaidIcon className="w-6 h-6"/>
-                                <span>Continue with Plaid</span>
-                            </>
+                {error && (
+                    <div className="p-3 bg-red-900/50 border border-red-500/50 rounded-md flex flex-col space-y-2 text-sm text-left">
+                        <div className="flex items-start space-x-3 text-red-300">
+                            <AlertTriangleIcon className="w-8 h-8 flex-shrink-0 mt-0.5"/>
+                            <span className="text-red-200 whitespace-pre-wrap">{error}</span>
+                        </div>
+                        {rawError && (
+                            <details className="bg-black/20 rounded p-2 text-xs text-red-400 whitespace-pre-wrap">
+                                <summary className="cursor-pointer text-red-300">Raw error details</summary>
+                                {typeof rawError === 'string' ? rawError : JSON.stringify(rawError, null, 2)}
+                            </details>
                         )}
-                    </button>
-                </div>
+                        <div className="flex justify-end pt-1">
+                            <button
+                                onClick={() => {
+                                    setError(null); 
+                                    setRawError(null); 
+                                    setIsLoading(true); 
+                                    setLinkToken(null);
+                                }}
+                                className="px-3 py-1 text-xs rounded bg-red-700 hover:bg-red-600 text-white"
+                            >Retry</button>
+                        </div>
+                    </div>
+                )}
 
-                 <p className="text-xs text-gray-500 pt-2">
-                    By connecting, you agree to the Plaid <a href="https://plaid.com/legal" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-300">End User Privacy Policy</a>.
-                </p>
+                {isLoading && (
+                    <div className="flex items-center justify-center py-8">
+                        <RefreshCwIcon className="w-6 h-6 animate-spin mr-3"/>
+                        <span>Initializing secure connection...</span>
+                    </div>
+                )}
+
+                {linkToken && user && !isLoading && !error && (
+                    <div className="space-y-4">
+                        <div className="text-center text-sm text-gray-400 mb-4">
+                            <PlaidIcon className="w-8 h-8 mx-auto mb-2"/>
+                            Secure connection ready for user {user.email}
+                        </div>
+                        
+                        <PlaidLinkIframe
+                            linkToken={linkToken}
+                            user={user}
+                            onSuccess={onSuccess}
+                            onExit={handlePlaidExit}
+                            onEvent={handlePlaidEvent}
+                        />
+                        
+                        <p className="text-xs text-gray-500 text-center">
+                            By connecting, you agree to the Plaid <a href="https://plaid.com/legal" target="_blank" rel="noopener noreferrer" className="underline hover:text-gray-300">End User Privacy Policy</a>.
+                        </p>
+                    </div>
+                )}
             </div>
         </Modal>
     );
