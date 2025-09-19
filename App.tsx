@@ -94,12 +94,15 @@ const App: React.FC = () => {
         try {
             console.log('🔍 DEBUGGING: Fetching data for user:', user.id, 'email:', user.email); // Debug logging
             
-            const transactionQuery = `from_details.eq.${user.email},to_details.eq.${user.email}`;
-            console.log('🔍 DEBUGGING: Transaction query:', transactionQuery);
+            // Get transactions where user is either sender or recipient
+            const { data: transactionsData, error: transactionsError } = await supabase
+                .from('transactions')
+                .select('*')
+                .or(`from_details.eq.${user.email},to_details.eq.${user.email}`)
+                .order('created_at', { ascending: false });
             
-            const [accountsRes, transactionsRes, savingsRes] = await Promise.all([
+            const [accountsRes, savingsRes] = await Promise.all([
                 supabase.from('accounts').select('*').eq('user_id', user.id),
-                supabase.from('transactions').select('*').or(transactionQuery).order('created_at', { ascending: false }),
                 supabase.from('locked_savings').select('*').eq('user_id', user.id)
             ]);
 
@@ -107,18 +110,18 @@ const App: React.FC = () => {
                 console.error('Accounts fetch error:', accountsRes.error);
                 throw accountsRes.error;
             }
-            if (transactionsRes.error) {
-                console.error('Transactions fetch error:', transactionsRes.error);
-                throw transactionsRes.error;
+            if (transactionsError) {
+                console.error('Transactions fetch error:', transactionsError);
+                throw transactionsError;
             }
             if (savingsRes.error) {
                 console.error('Savings fetch error:', savingsRes.error);
                 throw savingsRes.error;
             }
 
-            console.log('🔍 DEBUGGING: Raw transactions returned:', transactionsRes.data?.length || 0);
-            if (transactionsRes.data && transactionsRes.data.length > 0) {
-                console.log('🔍 DEBUGGING: First few transactions:', transactionsRes.data.slice(0, 3).map(t => ({
+            console.log('🔍 DEBUGGING: Raw transactions returned:', transactionsData?.length || 0);
+            if (transactionsData && transactionsData.length > 0) {
+                console.log('🔍 DEBUGGING: First few transactions:', transactionsData.slice(0, 3).map(t => ({
                     id: t.id,
                     from: t.from_details,
                     to: t.to_details,
@@ -131,8 +134,8 @@ const App: React.FC = () => {
             console.log('Fetched accounts:', accountsRes.data); // Debug logging
             setAccounts(accountsRes.data as Account[]);
             
-            console.log('Raw transactions from DB:', transactionsRes.data?.length, 'transactions');
-            console.log('Transaction details:', transactionsRes.data?.map(t => ({ 
+            console.log('Raw transactions from DB:', transactionsData?.length, 'transactions');
+            console.log('Transaction details:', transactionsData?.map(t => ({ 
                 id: t.id, 
                 from: t.from_details, 
                 to: t.to_details, 
@@ -141,7 +144,7 @@ const App: React.FC = () => {
                 type: t.type
             })));
             
-            const formattedTransactions = transactionsRes.data.map(tx => ({
+            const formattedTransactions = transactionsData.map(tx => ({
                 ...tx,
                 date: new Date(tx.created_at), // Map created_at to date
                 geoFence: tx.geo_fence,

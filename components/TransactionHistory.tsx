@@ -119,6 +119,8 @@ const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                                 {showAccountSelector === tx.id ? (
                                     <div className="flex flex-col gap-2 w-full">
                                         <select 
+                                            id="dest-account-with-restrictions"
+                                            name="destinationAccountWithRestrictions"
                                             value={selectedAccountId} 
                                             onChange={(e) => setSelectedAccountId(e.target.value)}
                                             className="bg-gray-700 border border-gray-600 rounded-md p-2 text-xs"
@@ -171,6 +173,8 @@ const TransactionHistory: React.FC<TransactionHistoryProps> = ({
                                 {showAccountSelector === tx.id ? (
                                     <div className="flex flex-col gap-2 w-full">
                                         <select 
+                                            id="dest-account-no-restrictions"
+                                            name="destinationAccountNoRestrictions"
                                             value={selectedAccountId} 
                                             onChange={(e) => setSelectedAccountId(e.target.value)}
                                             className="bg-gray-700 border border-gray-600 rounded-md p-2 text-xs"
