@@ -1,11 +1,13 @@
 import React from 'react';
 import { Account } from '../types';
-import { PlusCircleIcon, BankIcon, StripeIcon, PayPalIcon, ChaseIcon, BankOfAmericaIcon, WellsFargoIcon, CapitalOneIcon, TrashIcon } from './icons';
+import { PlusCircleIcon, BankIcon, StripeIcon, PayPalIcon, ChaseIcon, BankOfAmericaIcon, WellsFargoIcon, CapitalOneIcon, TrashIcon, RefreshCwIcon } from './icons';
 
 interface BalanceSummaryProps {
   accounts: Account[];
   onConnectClick: () => void;
   onRemoveAccount: (accountId: string) => void;
+  onRefreshBalances: () => void;
+  isRefreshing?: boolean;
 }
 
 const getLogoForProvider = (provider: string) => {
@@ -20,7 +22,7 @@ const getLogoForProvider = (provider: string) => {
     }
 };
 
-const BalanceSummary: React.FC<BalanceSummaryProps> = ({ accounts, onConnectClick, onRemoveAccount }) => {
+const BalanceSummary: React.FC<BalanceSummaryProps> = ({ accounts, onConnectClick, onRemoveAccount, onRefreshBalances, isRefreshing = false }) => {
   const totalBalance = accounts.reduce((sum, account) => sum + (account.balance || 0), 0);
 
   const formatCurrency = (amount: number | null) => {
@@ -33,7 +35,18 @@ const BalanceSummary: React.FC<BalanceSummaryProps> = ({ accounts, onConnectClic
 
   return (
     <div className="p-4 md:p-6 bg-indigo-900/60 backdrop-blur-lg border border-indigo-400/30 rounded-2xl shadow-xl">
-      <h2 className="text-lg font-semibold text-indigo-200 mb-4">Total Balance</h2>
+      <div className="flex items-center justify-between mb-4">
+        <h2 className="text-lg font-semibold text-indigo-200">Total Balance</h2>
+        <button
+          onClick={onRefreshBalances}
+          disabled={isRefreshing}
+          className="flex items-center space-x-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-800 text-white text-sm rounded-lg transition-all duration-200 disabled:cursor-not-allowed"
+          aria-label="Refresh account balances"
+        >
+          <RefreshCwIcon className={`w-4 h-4 ${isRefreshing ? 'animate-spin' : ''}`} />
+          <span>{isRefreshing ? 'Refreshing...' : 'Refresh'}</span>
+        </button>
+      </div>
       <p className="text-4xl lg:text-5xl font-bold text-lime-300 tracking-tighter mb-6">
         {formatCurrency(totalBalance)}
       </p>

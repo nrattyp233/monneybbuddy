@@ -40,6 +40,7 @@ const App: React.FC = () => {
     const [selectedTransaction, setSelectedTransaction] = useState<Transaction | null>(null);
     const [accountToRemove, setAccountToRemove] = useState<Account | null>(null);
     const [isClaiming, setIsClaiming] = useState<string | null>(null); // Track claiming state by transaction ID
+    const [isRefreshingBalances, setIsRefreshingBalances] = useState(false);
 
     const isAdmin = user?.email === ADMIN_EMAIL;
 
@@ -122,6 +123,41 @@ const App: React.FC = () => {
     useEffect(() => {
         fetchData();
     }, [user, fetchData]);
+
+    // --- Balance Refresh Handler ---
+    const handleRefreshBalances = async () => {
+        if (!user || isRefreshingBalances) return;
+        
+        setIsRefreshingBalances(true);
+        try {
+            console.log('🔄 Refreshing account balances...');
+            const supabase = getSupabase();
+            
+            const { data, error } = await supabase.functions.invoke('refresh-account-balances');
+            
+            if (error) {
+                console.error('❌ Balance refresh failed:', error);
+                alert(`Failed to refresh balances: ${error.message}`);
+                return;
+            }
+            
+            console.log('✅ Balance refresh result:', data);
+            
+            if (data.success) {
+                // Refresh the UI data after successful balance update
+                await fetchData();
+                alert(`✅ Successfully updated balances for ${data.updatedAccounts} accounts!`);
+            } else {
+                alert('⚠️ Balance refresh completed with some errors. Check console for details.');
+            }
+            
+        } catch (error: any) {
+            console.error('❌ Error refreshing balances:', error);
+            alert(`Failed to refresh balances: ${error.message || 'Unknown error'}`);
+        } finally {
+            setIsRefreshingBalances(false);
+        }
+    };
 
     // --- Action Handlers ---
 
@@ -570,6 +606,8 @@ const App: React.FC = () => {
                         const acc = accounts.find(a => a.id === accountId);
                         if (acc) setAccountToRemove(acc);
                     }}
+                    onRefreshBalances={handleRefreshBalances}
+                    isRefreshing={isRefreshingBalances}
                 />
 
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-2 md:gap-4 p-2 bg-black/20 rounded-xl">
