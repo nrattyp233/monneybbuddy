@@ -47,12 +47,12 @@ const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions, c
     }
 
     const incomingRequests = transactions.filter(tx => tx.type === 'request' && tx.status === TransactionStatus.PENDING && tx.to_details === currentUserEmail);
-    // An incoming pending "send" is a conditional payment I need to claim.
+    
+    // ALL incoming pending "send" transactions need to be handled by recipient
     const pendingToClaim = transactions.filter(tx => 
         tx.type === 'send' && 
         tx.status === TransactionStatus.PENDING && 
-        tx.to_details === currentUserEmail && 
-        (tx.geoFence || tx.timeRestriction)
+        tx.to_details === currentUserEmail
     );
     
     const otherPending = transactions.filter(tx => 
@@ -67,9 +67,10 @@ const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions, c
 
     const renderTransactionItem = (tx: Transaction) => {
         const isMyIncomingRequest = tx.type === 'request' && tx.to_details === currentUserEmail && tx.status === TransactionStatus.PENDING;
-        const isMyIncomingConditionalSend = tx.type === 'send' && tx.to_details === currentUserEmail && tx.status === TransactionStatus.PENDING && (tx.geoFence || tx.timeRestriction);
+        const isMyIncomingPendingSend = tx.type === 'send' && tx.to_details === currentUserEmail && tx.status === TransactionStatus.PENDING;
+        const hasRestrictions = !!(tx.geoFence || tx.timeRestriction);
 
-        const isActionable = isMyIncomingRequest || isMyIncomingConditionalSend;
+        const isActionable = isMyIncomingRequest || isMyIncomingPendingSend;
         
         // Determine if it's a debit or credit from the current user's perspective
         let isDebit = false;
@@ -101,7 +102,7 @@ const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions, c
                                 <button onClick={(e) => { e.stopPropagation(); onApproveRequest(tx); }} className="w-full sm:w-auto text-xs text-center justify-center flex-1 bg-green-600 text-white px-3 py-2 rounded-md hover:bg-green-500 transition font-bold">Approve</button>
                             </>
                         )}
-                        {isMyIncomingConditionalSend && (
+                        {isMyIncomingPendingSend && hasRestrictions && (
                              <button 
                                 onClick={(e) => { e.stopPropagation(); onClaimTransaction(tx); }} 
                                 disabled={isClaimingId === tx.id}
@@ -109,6 +110,16 @@ const TransactionHistory: React.FC<TransactionHistoryProps> = ({ transactions, c
                             >
                                 {isClaimingId === tx.id ? <RefreshCwIcon className="w-4 h-4 animate-spin"/> : <MapPinIcon className="w-4 h-4"/>}
                                 {isClaimingId === tx.id ? 'Claiming...' : 'Claim'}
+                            </button>
+                        )}
+                        {isMyIncomingPendingSend && !hasRestrictions && (
+                             <button 
+                                onClick={(e) => { e.stopPropagation(); onClaimTransaction(tx); }} 
+                                disabled={isClaimingId === tx.id}
+                                className="w-full sm:w-auto text-xs text-center justify-center flex items-center gap-2 flex-1 bg-blue-600 text-white px-3 py-2 rounded-md hover:bg-blue-500 transition font-bold disabled:bg-gray-500 disabled:cursor-wait"
+                            >
+                                {isClaimingId === tx.id ? <RefreshCwIcon className="w-4 h-4 animate-spin"/> : <DollarSignIcon className="w-4 h-4"/>}
+                                {isClaimingId === tx.id ? 'Accepting...' : 'Accept Payment'}
                             </button>
                         )}
                          {tx.status === TransactionStatus.PENDING && !isActionable && (
